@@ -1,0 +1,116 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isAdmin() {
+      return request.auth != null &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.userType == 'admin';
+    }
+    
+    // Правила для пользователей
+    match /users/{userId} {
+      allow create: if request.auth != null &&
+                      request.auth.uid == userId &&
+                      request.resource.data.userType in ['client', 'driver'];
+
+      allow read: if request.auth != null &&
+                    (request.auth.uid == userId ||
+                     resource.data.userType == 'driver' ||
+                     isAdmin());
+
+      // Пользователь не может повысить собственную роль. Администратор может
+      // проверять документы, не меняя роль владельца профиля.
+      allow update: if request.auth != null &&
+                      ((request.auth.uid == userId &&
+                        request.resource.data.userType == resource.data.userType) ||
+                       (isAdmin() &&
+                        request.resource.data.userType == resource.data.userType));
+
+      allow delete: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // Правила для заказов
+    match /orders/{orderId} {
+      // Функция проверки, является ли пользователь клиентом заказа
+      function isOrderClient() {
+        return request.auth != null && resource.data.clientId == request.auth.uid;
+      }
+      
+      // Функция проверки, является ли пользователь водителем заказа
+      function isOrderDriver() {
+        return request.auth != null && resource.data.driverId == request.auth.uid;
+      }
+      
+      // Функция проверки, является ли заказ доступным (без водителя)
+      function isAvailableOrder() {
+        return resource.data.driverId == null;
+      }
+      
+      // Создание заказа
+      // Только авторизованные клиенты могут создавать заказы
+      allow create: if request.auth != null && 
+                      request.resource.data.clientId == request.auth.uid &&
+                      request.resource.data.status == 'accepted' &&
+                      request.resource.data.driverId == null;
+      
+      // Чтение заказа
+      // Клиент может читать свои заказы
+      // Водитель может читать свои заказы
+      // Все водители могут читать доступные заказы
+      allow read: if request.auth != null && 
+                    (resource.data.clientId == request.auth.uid || 
+                     resource.data.driverId == request.auth.uid ||
+                     resource.data.driverId == null);
+      
+      // Обновление заказа
+      // Водитель может принять доступный заказ (назначить себя)
+      allow update: if request.auth != null && 
+                      resource.data.driverId == null &&
+                      request.resource.data.driverId == request.auth.uid;
+      
+      // Водитель может обновлять статус своих заказов
+      allow update: if request.auth != null && 
+                      resource.data.driverId == request.auth.uid;
+      
+      // Клиент может отменить свой заказ (если он еще не принят водителем)
+      allow update: if request.auth != null && 
+                      resource.data.clientId == request.auth.uid &&
+                      resource.data.driverId == null &&
+                      request.resource.data.status == 'cancelled';
+      
+      // Удаление заказа
+      // Только клиент может удалить свой заказ (если он не принят водителем)
+      allow delete: if request.auth != null && 
+                      resource.data.clientId == request.auth.uid &&
+                      resource.data.driverId == null;
+    }
+    
+    // Правила для отзывов (если будут добавлены)
+    match /reviews/{reviewId} {
+      // Любой авторизованный пользователь может читать отзывы
+      allow read: if request.auth != null;
+      
+      // Только клиент может оставить отзыв о своем заказе
+      allow create: if request.auth != null && 
+                      request.resource.data.clientId == request.auth.uid;
+    }
+    
+    // Правила для уведомлений (если будут добавлены)
+    match /notifications/{notificationId} {
+      // Пользователь может читать только свои уведомления
+      allow read: if request.auth != null && 
+                    resource.data.userId == request.auth.uid;
+      
+      // Система может создавать уведомления
+      allow create: if request.auth != null;
+      
+      // Пользователь может обновлять свои уведомления (отметить как прочитанное)
+      allow update: if request.auth != null && 
+                      resource.data.userId == request.auth.uid;
+      
+      // Пользователь может удалять свои уведомления
+      allow delete: if request.auth != null && 
+                      resource.data.userId == request.auth.uid;
+    }
+  }
+}
