@@ -1,0 +1,62 @@
+[0/1] Planning build
+Building for debugging...
+[0/3] Write sources
+[1/3] Write swift-version--58304C5D6DBC2206.txt
+[3/5] Compiling ValidationCore AuthValidation.swift
+[4/5] Emitting module ValidationCore
+[4/6] Write Objects.LinkFileList
+[5/6] Linking LogisticsValidationTestsPackageTests
+Build complete! (1.84s)
+Test Suite 'All tests' started at 2026-10-05 19:31:35.495.
+Test Suite 'LogisticsValidationTestsPackageTests.xctest' started at 2026-10-05 19:31:35.501.
+Test Suite 'AuthValidationTests' started at 2026-10-05 19:31:35.501.
+Test Case '-[ValidationCoreTests.AuthValidationTests testN01_emptyEmail]' started.
+Test Case '-[ValidationCoreTests.AuthValidationTests testN01_emptyEmail]' passed (0.002 seconds).
+Test Case '-[ValidationCoreTests.AuthValidationTests testN02_missingAtSign]' started.
+Test Case '-[ValidationCoreTests.AuthValidationTests testN02_missingAtSign]' passed (0.000 seconds).
+Test Case '-[ValidationCoreTests.AuthValidationTests testN03_missingDomainDot]' started.
+Test Case '-[ValidationCoreTests.AuthValidationTests testN03_missingDomainDot]' passed (0.000 seconds).
+Test Case '-[ValidationCoreTests.AuthValidationTests testN04_leadingDot]' started.
+Test Case '-[ValidationCoreTests.AuthValidationTests testN04_leadingDot]' passed (0.000 seconds).
+Test Case '-[ValidationCoreTests.AuthValidationTests testN05_consecutiveDomainDots]' started.
+Test Case '-[ValidationCoreTests.AuthValidationTests testN05_consecutiveDomainDots]' passed (0.000 seconds).
+Test Case '-[ValidationCoreTests.AuthValidationTests testN06_symbolInPassword]' started.
+Test Case '-[ValidationCoreTests.AuthValidationTests testN06_symbolInPassword]' passed (0.001 seconds).
+Test Case '-[ValidationCoreTests.AuthValidationTests testN07_emptyPassword]' started.
+Test Case '-[ValidationCoreTests.AuthValidationTests testN07_emptyPassword]' passed (0.000 seconds).
+Test Case '-[ValidationCoreTests.AuthValidationTests testN08_tenDigitPhone]' started.
+Test Case '-[ValidationCoreTests.AuthValidationTests testN08_tenDigitPhone]' passed (0.000 seconds).
+Test Case '-[ValidationCoreTests.AuthValidationTests testN09_lettersInPhone]' started.
+Test Case '-[ValidationCoreTests.AuthValidationTests testN09_lettersInPhone]' passed (0.000 seconds).
+Test Case '-[ValidationCoreTests.AuthValidationTests testN10_oneCharacterName]' started.
+Test Case '-[ValidationCoreTests.AuthValidationTests testN10_oneCharacterName]' passed (0.000 seconds).
+Test Case '-[ValidationCoreTests.AuthValidationTests testP01_minimalEmail]' started.
+Test Case '-[ValidationCoreTests.AuthValidationTests testP01_minimalEmail]' passed (0.000 seconds).
+Test Case '-[ValidationCoreTests.AuthValidationTests testP02_dottedLocalPart]' started.
+Test Case '-[ValidationCoreTests.AuthValidationTests testP02_dottedLocalPart]' passed (0.000 seconds).
+Test Case '-[ValidationCoreTests.AuthValidationTests testP03_plusAlias]' started.
+Test Case '-[ValidationCoreTests.AuthValidationTests testP03_plusAlias]' passed (0.000 seconds).
+Test Case '-[ValidationCoreTests.AuthValidationTests testP04_longTLD]' started.
+Test Case '-[ValidationCoreTests.AuthValidationTests testP04_longTLD]' passed (0.000 seconds).
+Test Case '-[ValidationCoreTests.AuthValidationTests testP05_sixCharacterPassword]' started.
+Test Case '-[ValidationCoreTests.AuthValidationTests testP05_sixCharacterPassword]' passed (0.000 seconds).
+Test Case '-[ValidationCoreTests.AuthValidationTests testP06_mixedCasePassword]' started.
+Test Case '-[ValidationCoreTests.AuthValidationTests testP06_mixedCasePassword]' passed (0.000 seconds).
+Test Case '-[ValidationCoreTests.AuthValidationTests testP07_elevenDigits]' started.
+Test Case '-[ValidationCoreTests.AuthValidationTests testP07_elevenDigits]' passed (0.000 seconds).
+Test Case '-[ValidationCoreTests.AuthValidationTests testP08_formattedPhone]' started.
+Test Case '-[ValidationCoreTests.AuthValidationTests testP08_formattedPhone]' passed (0.000 seconds).
+Test Case '-[ValidationCoreTests.AuthValidationTests testP09_singleWordName]' started.
+Test Case '-[ValidationCoreTests.AuthValidationTests testP09_singleWordName]' passed (0.000 seconds).
+Test Case '-[ValidationCoreTests.AuthValidationTests testP10_twoWordName]' started.
+Test Case '-[ValidationCoreTests.AuthValidationTests testP10_twoWordName]' passed (0.000 seconds).
+Test Suite 'AuthValidationTests' passed at 2026-10-05 19:31:35.509.
+	 Executed 20 tests, with 0 failures (0 unexpected) in 0.006 (0.008) seconds
+Test Suite 'LogisticsValidationTestsPackageTests.xctest' passed at 2026-10-05 19:31:35.509.
+	 Executed 20 tests, with 0 failures (0 unexpected) in 0.006 (0.008) seconds
+Test Suite 'All tests' passed at 2026-10-05 19:31:35.509.
+	 Executed 20 tests, with 0 failures (0 unexpected) in 0.006 (0.014) seconds
+◇ Test run started.
+↳ Testing Library Version: 1501
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.
