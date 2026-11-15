@@ -28,7 +28,14 @@ class OrderService: ObservableObject {
         
         let trackNumber = generateTrackNumber()
         let calendar = Calendar.current
-        let estimatedDelivery = calendar.date(byAdding: .day, value: tariffType == .express ? 2 : 7, to: Date())!
+        let deliveryDays: Int
+        switch tariffType {
+        case .express: deliveryDays = 2
+        case .standard: deliveryDays = 5
+        case .economy: deliveryDays = 7
+        case .international: deliveryDays = 14
+        }
+        let estimatedDelivery = calendar.date(byAdding: .day, value: deliveryDays, to: Date())!
         
         let order = Order(
             id: UUID().uuidString,

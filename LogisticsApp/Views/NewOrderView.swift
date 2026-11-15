@@ -195,12 +195,20 @@ struct NewOrderView: View {
     }
     
     // Проверка валидности формы
+    private var parsedWeight: Double? {
+        let normalized = weight.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: ",", with: ".")
+        guard let value = Double(normalized), value.isFinite, value > 0 else {
+            return nil
+        }
+        return value
+    }
+
     private var isFormValid: Bool {
         isFromAddressValid &&
         isToAddressValid &&
-        !packageDescription.isEmpty &&
-        !weight.isEmpty &&
-        Double(weight) != nil
+        !packageDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        parsedWeight != nil
     }
     
     private func calculateTotalPrice() -> String {
@@ -228,7 +236,7 @@ struct NewOrderView: View {
     }
     
     private func createNewOrder() async {
-        guard let weightValue = Double(weight),
+        guard let weightValue = parsedWeight,
               let currentUser = authService.currentUser else { return }
         
         isCreatingOrder = true

@@ -83,9 +83,10 @@ struct CitiesDatabase {
     
     // Поиск городов по запросу (поддерживает казахский, русский, английский)
     static func search(query: String) -> [City] {
-        guard !query.isEmpty else { return [] }
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
         
-        let lowercasedQuery = query.lowercased()
+        let lowercasedQuery = trimmed.lowercased()
         
         return cities.filter { city in
             city.nameKZ.lowercased().contains(lowercasedQuery) ||
@@ -96,19 +97,17 @@ struct CitiesDatabase {
     
     // Проверка существования города (принимает любое название)
     static func isValid(cityName: String) -> Bool {
-        return cities.contains { city in
-            city.nameKZ.lowercased() == cityName.lowercased() ||
-            city.nameRU.lowercased() == cityName.lowercased() ||
-            city.nameEN.lowercased() == cityName.lowercased()
-        }
+        return getCity(name: cityName) != nil
     }
     
     // Получить город по названию (принимает любое название)
     static func getCity(name: String) -> City? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !trimmed.isEmpty else { return nil }
         return cities.first { city in
-            city.nameKZ.lowercased() == name.lowercased() ||
-            city.nameRU.lowercased() == name.lowercased() ||
-            city.nameEN.lowercased() == name.lowercased()
+            city.nameKZ.lowercased() == trimmed ||
+            city.nameRU.lowercased() == trimmed ||
+            city.nameEN.lowercased() == trimmed
         }
     }
     

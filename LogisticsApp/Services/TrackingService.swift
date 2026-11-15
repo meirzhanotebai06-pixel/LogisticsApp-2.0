@@ -230,11 +230,13 @@ class TrackingService: ObservableObject {
     }
     
     func searchShipment(trackNumber: String) -> Shipment? {
-        return shipments.first { $0.trackNumber.lowercased() == trackNumber.lowercased() }
+        let normalized = trackNumber.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return shipments.first { $0.trackNumber.lowercased() == normalized }
     }
     
     func updateShipmentStatus(trackNumber: String, newStatus: ShipmentStatus) {
-        if let index = shipments.firstIndex(where: { $0.trackNumber == trackNumber }) {
+        let normalized = trackNumber.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if let index = shipments.firstIndex(where: { $0.trackNumber.lowercased() == normalized }) {
             let shipment = shipments[index]
             shipments[index] = Shipment(
                 trackNumber: shipment.trackNumber,
