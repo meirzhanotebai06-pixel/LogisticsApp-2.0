@@ -1,6 +1,6 @@
 import Foundation
-import FirebaseFirestore
 import Combine
+import FirebaseFirestore
 
 enum DocumentVerificationStatus: String {
     case pending
@@ -8,14 +8,18 @@ enum DocumentVerificationStatus: String {
     case rejected
 }
 
+@MainActor
 final class AdminService: ObservableObject {
     @Published var drivers: [User] = []
+    @Published var allOrders: [Order] = []
     @Published var isLoading = false
     @Published var errorMessage: String?
     @Published var updatingDocumentKey: String?
+    @Published var updatingOrderId: String?
 
     private let db = Firestore.firestore()
     private var driversListener: ListenerRegistration?
+    private var ordersListener: ListenerRegistration?
 
     func startListening() {
         stopListening()
@@ -24,12 +28,12 @@ final class AdminService: ObservableObject {
         driversListener = db.collection("users")
             .whereField("userType", isEqualTo: UserType.driver.rawValue)
             .addSnapshotListener { [weak self] snapshot, error in
-                DispatchQueue.main.async {
+                Task { @MainActor [weak self] in
                     guard let self else { return }
                     self.isLoading = false
 
                     if let error {
-                        self.errorMessage = "Не удалось загрузить водителей: \(error.localizedDescription)"
+                        self.errorMessage = "Жүргізушілерді жүктеу сәтсіз: \(error.localizedDescription)"
                         return
                     }
 
@@ -38,11 +42,29 @@ final class AdminService: ObservableObject {
                         .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending } ?? []
                 }
             }
+
+        ordersListener = db.collection("orders")
+            .order(by: "createdAt", descending: true)
+            .addSnapshotListener { [weak self] snapshot, error in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+
+                    if let error {
+                        self.errorMessage = "Тапсырыстарды жүктеу сәтсіз: \(error.localizedDescription)"
+                        return
+                    }
+
+                    self.allOrders = snapshot?.documents
+                        .compactMap { Order.fromDictionary($0.data()) } ?? []
+                }
+            }
     }
 
     func stopListening() {
         driversListener?.remove()
         driversListener = nil
+        ordersListener?.remove()
+        ordersListener = nil
     }
 
     func reviewDocument(
@@ -71,12 +93,62 @@ final class AdminService: ObservableObject {
         do {
             try await db.collection("users").document(driverId).updateData(updates)
         } catch {
-            errorMessage = "Не удалось изменить статус документа: \(error.localizedDescription)"
+            errorMessage = "Құжат статусын өзгерту сәтсіз: \(error.localizedDescription)"
+        }
+    }
+
+    func cancelOrder(orderId: String) async {
+        updatingOrderId = orderId
+        defer { updatingOrderId = nil }
+
+        let now = Date()
+        let event = OrderStatusEvent(
+            status: OrderStatus.cancelled.rawValue,
+            timestamp: now,
+            note: "Администратор тапсырысты болдырмады"
+        )
+
+        do {
+            try await db.collection("orders").document(orderId).updateData([
+                "status": OrderStatus.cancelled.rawValue,
+                "cancelledAt": Timestamp(date: now),
+                "updatedAt": Timestamp(date: now),
+                "statusHistory": FieldValue.arrayUnion([event.toDict()])
+            ])
+        } catch {
+            errorMessage = "Тапсырысты болдырмау сәтсіз: \(error.localizedDescription)"
+        }
+    }
+
+    func unassignDriver(orderId: String) async {
+        updatingOrderId = orderId
+        defer { updatingOrderId = nil }
+
+        let now = Date()
+        let event = OrderStatusEvent(
+            status: OrderStatus.accepted.rawValue,
+            timestamp: now,
+            note: "Администратор жүргізушіні босатты"
+        )
+
+        do {
+            try await db.collection("orders").document(orderId).updateData([
+                "driverId": NSNull(),
+                "driverName": FieldValue.delete(),
+                "driverPhone": FieldValue.delete(),
+                "driverLocation": FieldValue.delete(),
+                "status": OrderStatus.accepted.rawValue,
+                "updatedAt": Timestamp(date: now),
+                "statusHistory": FieldValue.arrayUnion([event.toDict()])
+            ])
+        } catch {
+            errorMessage = "Жүргізушіні босату сәтсіз: \(error.localizedDescription)"
         }
     }
 
     deinit {
         driversListener?.remove()
+        ordersListener?.remove()
     }
 }
 

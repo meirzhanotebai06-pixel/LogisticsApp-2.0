@@ -1,8 +1,21 @@
 import SwiftUI
 
+private enum AdminDriverFilter: String, CaseIterable, Identifiable {
+    case all = "Все"
+    case pending = "Ожидают"
+    case approved = "Подтверждены"
+    case rejected = "Отклонены"
+
+    var id: String { rawValue }
+}
+
 struct AdminDashboardView: View {
     @EnvironmentObject private var authService: AuthService
     @StateObject private var adminService = AdminService()
+
+    @State private var selectedSection = 0
+    @State private var driverFilter: AdminDriverFilter = .all
+    @State private var searchText = ""
 
     private var pendingCount: Int {
         adminService.drivers.reduce(0) { result, driver in
@@ -12,8 +25,65 @@ struct AdminDashboardView: View {
         }
     }
 
+    private var filteredDrivers: [User] {
+        adminService.drivers.filter { driver in
+            let docs = driver.vehicleInfo?.documents?.allDocuments ?? []
+            let matchesFilter: Bool
+            switch driverFilter {
+            case .all:
+                matchesFilter = true
+            case .pending:
+                matchesFilter = docs.contains { $0.effectiveVerificationStatus == .pending }
+            case .approved:
+                matchesFilter = docs.count == 4 && docs.allSatisfy { $0.effectiveVerificationStatus == .approved && !$0.isExpired }
+            case .rejected:
+                matchesFilter = docs.contains { $0.effectiveVerificationStatus == .rejected }
+            }
+
+            let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let matchesSearch = q.isEmpty ||
+                driver.name.lowercased().contains(q) ||
+                driver.email.lowercased().contains(q) ||
+                (driver.vehicleInfo?.plateNumber.lowercased().contains(q) ?? false)
+
+            return matchesFilter && matchesSearch
+        }
+    }
+
     var body: some View {
-        NavigationView {
+        TabView(selection: $selectedSection) {
+            driversTab
+                .tabItem {
+                    Label("Документы", systemImage: "person.badge.shield.checkmark")
+                }
+                .tag(0)
+
+            ordersTab
+                .tabItem {
+                    Label("Заказы", systemImage: "shippingbox")
+                }
+                .tag(1)
+        }
+        .onAppear {
+            adminService.startListening()
+        }
+        .onDisappear {
+            adminService.stopListening()
+        }
+        .alert("Ошибка", isPresented: Binding(
+            get: { adminService.errorMessage != nil },
+            set: { if !$0 { adminService.errorMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) {
+                adminService.errorMessage = nil
+            }
+        } message: {
+            Text(adminService.errorMessage ?? "Неизвестная ошибка")
+        }
+    }
+
+    private var driversTab: some View {
+        NavigationStack {
             Group {
                 if adminService.isLoading && adminService.drivers.isEmpty {
                     ProgressView("Загрузка водителей...")
@@ -44,10 +114,17 @@ struct AdminDashboardView: View {
                                 )
                             }
                             .padding(.vertical, 8)
+
+                            Picker("Фильтр", selection: $driverFilter) {
+                                ForEach(AdminDriverFilter.allCases) { filter in
+                                    Text(filter.rawValue).tag(filter)
+                                }
+                            }
+                            .pickerStyle(.segmented)
                         }
 
-                        Section("Документы водителей") {
-                            ForEach(adminService.drivers) { driver in
+                        Section("Документы водителей (\(filteredDrivers.count))") {
+                            ForEach(filteredDrivers) { driver in
                                 NavigationLink {
                                     AdminDriverDetailView(driverId: driver.id)
                                         .environmentObject(adminService)
@@ -62,31 +139,101 @@ struct AdminDashboardView: View {
                     }
                 }
             }
+            .searchable(text: $searchText, prompt: "Имя, email или госномер")
             .navigationTitle("Админ-панель")
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItem(placement: .topBarTrailing) {
                     Button("Выйти", role: .destructive) {
                         authService.logout()
                     }
                 }
             }
-            .onAppear {
-                adminService.startListening()
-            }
-            .onDisappear {
-                adminService.stopListening()
-            }
-            .alert("Ошибка", isPresented: Binding(
-                get: { adminService.errorMessage != nil },
-                set: { if !$0 { adminService.errorMessage = nil } }
-            )) {
-                Button("OK", role: .cancel) {
-                    adminService.errorMessage = nil
+        }
+    }
+
+    private var ordersTab: some View {
+        NavigationStack {
+            List {
+                if adminService.allOrders.isEmpty {
+                    Text("Заказов пока нет")
+                        .foregroundColor(.secondary)
+                } else {
+                    ForEach(adminService.allOrders) { order in
+                        AdminOrderRow(order: order, adminService: adminService)
+                    }
                 }
-            } message: {
-                Text(adminService.errorMessage ?? "Неизвестная ошибка")
+            }
+            .navigationTitle("Все заказы (\(adminService.allOrders.count))")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Выйти", role: .destructive) {
+                        authService.logout()
+                    }
+                }
             }
         }
+    }
+}
+
+private struct AdminOrderRow: View {
+    let order: Order
+    @ObservedObject var adminService: AdminService
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(order.trackNumber)
+                    .font(.headline)
+                Spacer()
+                Text(order.orderStatus.title)
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(order.orderStatus.color.opacity(0.15))
+                    .foregroundColor(order.orderStatus.color)
+                    .cornerRadius(8)
+            }
+
+            Text(order.route)
+                .font(.subheadline)
+
+            HStack {
+                Text("Клиент: \(order.clientName)")
+                Spacer()
+                Text(order.price.formattedTenge(currency: order.currency))
+                    .fontWeight(.semibold)
+                    .foregroundColor(.blue)
+            }
+            .font(.caption)
+            .foregroundColor(.secondary)
+
+            if let driverName = order.driverName {
+                Text("Водитель: \(driverName)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            if order.orderStatus.isActive {
+                HStack(spacing: 12) {
+                    if order.driverId != nil {
+                        Button("Снять водителя") {
+                            Task { await adminService.unassignDriver(orderId: order.id) }
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.orange)
+                    }
+
+                    Button("Отменить заказ", role: .destructive) {
+                        Task { await adminService.cancelOrder(orderId: order.id) }
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .font(.caption)
+                .disabled(adminService.updatingOrderId == order.id)
+            }
+        }
+        .padding(.vertical, 4)
     }
 }
 
@@ -158,6 +305,7 @@ private struct AdminDriverDetailView: View {
     let driverId: String
 
     @State private var rejectionType: DocumentType?
+    @State private var previewImageURL: URL?
 
     private var driver: User? {
         adminService.drivers.first { $0.id == driverId }
@@ -187,7 +335,7 @@ private struct AdminDriverDetailView: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding()
-                    .background(Color.gray.opacity(0.1))
+                    .background(Color(.secondarySystemGroupedBackground))
                     .cornerRadius(12)
 
                     ForEach(DocumentType.allCases) { type in
@@ -195,6 +343,9 @@ private struct AdminDriverDetailView: View {
                             type: type,
                             document: driver.vehicleInfo?.documents?.document(for: type),
                             isUpdating: adminService.updatingDocumentKey == "\(driver.id)-\(type.fieldName)",
+                            onPreviewImage: { url in
+                                previewImageURL = url
+                            },
                             onApprove: {
                                 Task {
                                     await adminService.reviewDocument(
@@ -216,6 +367,7 @@ private struct AdminDriverDetailView: View {
                     .padding()
             }
         }
+        .background(Color(.systemGroupedBackground))
         .navigationTitle("Проверка документов")
         .navigationBarTitleDisplayMode(.inline)
         .sheet(item: $rejectionType) { type in
@@ -230,6 +382,50 @@ private struct AdminDriverDetailView: View {
                 }
             }
         }
+        .sheet(isPresented: Binding(
+            get: { previewImageURL != nil },
+            set: { if !$0 { previewImageURL = nil } }
+        )) {
+            if let url = previewImageURL {
+                AdminImagePreviewSheet(url: url)
+            }
+        }
+    }
+}
+
+private struct AdminImagePreviewSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let url: URL
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Color.black.ignoresSafeArea()
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .empty:
+                        ProgressView()
+                            .tint(.white)
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .scaledToFit()
+                    case .failure:
+                        Text("Не удалось загрузить изображение")
+                            .foregroundColor(.white)
+                    @unknown default:
+                        EmptyView()
+                    }
+                }
+            }
+            .navigationTitle("Фото документа")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Закрыть") { dismiss() }
+                }
+            }
+        }
     }
 }
 
@@ -237,6 +433,7 @@ private struct AdminDocumentReviewCard: View {
     let type: DocumentType
     let document: DocumentInfo?
     let isUpdating: Bool
+    let onPreviewImage: (URL) -> Void
     let onApprove: () -> Void
     let onReject: () -> Void
 
@@ -285,7 +482,12 @@ private struct AdminDocumentReviewCard: View {
             if let document {
                 Divider()
                 AdminDocumentField(title: "Номер", value: document.number)
-                AdminDocumentField(title: "Действителен до", value: document.expiryDate.formatted(date: .numeric, time: .omitted))
+
+                if let expiryDate = document.expiryDate {
+                    AdminDocumentField(title: "Действителен до", value: expiryDate.formattedDateOnly())
+                } else {
+                    AdminDocumentField(title: "Срок действия", value: "Бессрочный")
+                }
 
                 if let issuedBy = document.issuedBy, !issuedBy.isEmpty {
                     AdminDocumentField(title: "Кем выдан", value: issuedBy)
@@ -299,6 +501,32 @@ private struct AdminDocumentReviewCard: View {
                 if let vin = document.vin, !vin.isEmpty {
                     AdminDocumentField(title: "VIN", value: vin)
                 }
+
+                if let fileURL = document.fileURL, let url = URL(string: fileURL) {
+                    Button {
+                        onPreviewImage(url)
+                    } label: {
+                        AsyncImage(url: url) { phase in
+                            switch phase {
+                            case .empty:
+                                ProgressView()
+                                    .frame(maxWidth: .infinity, minHeight: 120)
+                            case .success(let image):
+                                image
+                                    .resizable()
+                                    .scaledToFit()
+                                    .frame(maxWidth: .infinity, maxHeight: 180)
+                                    .cornerRadius(8)
+                            case .failure:
+                                Label("Открыть скан документа", systemImage: "doc.text.image")
+                            @unknown default:
+                                EmptyView()
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+
                 if let reason = document.rejectionReason, !reason.isEmpty {
                     Text("Причина: \(reason)")
                         .font(.caption)
@@ -330,7 +558,7 @@ private struct AdminDocumentReviewCard: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
-        .background(Color.white)
+        .background(Color(.secondarySystemGroupedBackground))
         .cornerRadius(12)
         .shadow(color: .black.opacity(0.08), radius: 4, y: 2)
     }
@@ -360,7 +588,7 @@ private struct RejectionReasonView: View {
     @State private var reason = ""
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             Form {
                 Section("Причина отклонения") {
                     TextField("Что необходимо исправить", text: $reason, axis: .vertical)

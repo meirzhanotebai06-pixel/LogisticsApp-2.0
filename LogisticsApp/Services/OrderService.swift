@@ -1,17 +1,26 @@
 import Foundation
-import FirebaseFirestore
-import FirebaseAuth
+import CoreLocation
 import Combine
+import OSLog
+import FirebaseFirestore
 
+@MainActor
 class OrderService: ObservableObject {
     private let db = Firestore.firestore()
+    private let logger = Logger(subsystem: "com.meirzhan.LogisticsApp", category: "orders")
+
     @Published var orders: [Order] = []
+    @Published var availableOrders: [Order] = []
+    @Published var myOrders: [Order] = []
     @Published var isLoading = false
-    
-    private var ordersListener: ListenerRegistration?
-    
+    @Published var errorMessage: String?
+
+    private var clientOrdersListener: ListenerRegistration?
+    private var availableOrdersListener: ListenerRegistration?
+    private var driverOrdersListener: ListenerRegistration?
+
     // MARK: - Create Order
-    
+
     func createOrder(
         clientId: String,
         clientName: String,
@@ -22,21 +31,21 @@ class OrderService: ObservableObject {
         weight: Double,
         packageType: PackageType,
         tariffType: TariffType,
+        price: Int,
         insurance: Bool,
         urgentDelivery: Bool
     ) async throws -> Order {
-        
         let trackNumber = generateTrackNumber()
-        let calendar = Calendar.current
-        let deliveryDays: Int
-        switch tariffType {
-        case .express: deliveryDays = 2
-        case .standard: deliveryDays = 5
-        case .economy: deliveryDays = 7
-        case .international: deliveryDays = 14
-        }
-        let estimatedDelivery = calendar.date(byAdding: .day, value: deliveryDays, to: Date())!
-        
+        let now = Date()
+        let estimatedDelivery = Calendar.current.date(byAdding: .day, value: tariffType.deliveryDays, to: now) ?? now
+        let driverEarning = Int(Double(price) * 0.7)
+
+        let initialEvent = OrderStatusEvent(
+            status: OrderStatus.accepted.rawValue,
+            timestamp: now,
+            note: "Тапсырыс жасалды"
+        )
+
         let order = Order(
             id: UUID().uuidString,
             trackNumber: trackNumber,
@@ -49,146 +58,269 @@ class OrderService: ObservableObject {
             fromAddress: fromAddress,
             toAddress: toAddress,
             route: "\(fromAddress) → \(toAddress)",
-            packageDescription: packageDescription,
+            packageDescription: packageDescription.trimmingCharacters(in: .whitespacesAndNewlines),
             weight: weight,
-            packageType: packageType.rawValue,
-            tariffType: tariffType.rawValue,
-            status: "accepted",
+            packageType: packageType.storageKey,
+            tariffType: tariffType.storageKey,
+            status: OrderStatus.accepted.rawValue,
             hasInsurance: insurance,
             isUrgent: urgentDelivery,
-            createdAt: Date(),
+            price: price,
+            currency: "₸",
+            driverEarning: driverEarning,
+            createdAt: now,
             estimatedDelivery: estimatedDelivery,
-            deliveredAt: nil
+            deliveredAt: nil,
+            cancelledAt: nil,
+            statusHistory: [initialEvent],
+            driverLocation: nil
         )
-        
+
         let orderData = orderToDict(order)
-        
         try await db.collection("orders").document(order.id).setData(orderData)
-        
         return order
     }
-    
-    // MARK: - Listen to All Orders (for Drivers)
-    
-    func listenToAllOrders() {
-        ordersListener?.remove()
-        
-        ordersListener = db.collection("orders")
-            .order(by: "createdAt", descending: true)
-            .addSnapshotListener { [weak self] snapshot, error in
-                guard let self = self else { return }
-                
-                if let error = error {
-                    print("Error listening to orders: \(error.localizedDescription)")
-                    return
-                }
-                
-                guard let documents = snapshot?.documents else { return }
-                
-                self.orders = documents.compactMap { doc -> Order? in
-                    return Order.fromDictionary(doc.data())
-                }
-            }
-    }
-    
+
     // MARK: - Listen to Client Orders
-    
+
     func listenToClientOrders(clientId: String) {
-        ordersListener?.remove()
-        
-        ordersListener = db.collection("orders")
+        stopListening()
+        isLoading = true
+
+        clientOrdersListener = db.collection("orders")
             .whereField("clientId", isEqualTo: clientId)
             .order(by: "createdAt", descending: true)
             .addSnapshotListener { [weak self] snapshot, error in
-                guard let self = self else { return }
-                
-                if let error = error {
-                    print("Error listening to client orders: \(error.localizedDescription)")
-                    return
-                }
-                
-                guard let documents = snapshot?.documents else { return }
-                
-                self.orders = documents.compactMap { doc -> Order? in
-                    return Order.fromDictionary(doc.data())
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.isLoading = false
+
+                    if let error {
+                        self.logger.error("Client orders listener error: \(error.localizedDescription, privacy: .public)")
+                        self.errorMessage = "Тапсырыстарды жүктеу сәтсіз: \(error.localizedDescription)"
+                        return
+                    }
+
+                    self.orders = snapshot?.documents.compactMap { Order.fromDictionary($0.data()) } ?? []
                 }
             }
     }
-    
-    // MARK: - Listen to Driver Orders
-    
-    func listenToDriverOrders(driverId: String) {
-        ordersListener?.remove()
-        
-        ordersListener = db.collection("orders")
+
+    // MARK: - Listen to Driver Workspace (2 secure queries)
+
+    func listenToDriverWorkspace(driverId: String) {
+        stopListening()
+        isLoading = true
+
+        availableOrdersListener = db.collection("orders")
+            .whereField("status", isEqualTo: OrderStatus.accepted.rawValue)
+            .whereField("driverId", isEqualTo: NSNull())
+            .order(by: "createdAt", descending: true)
+            .addSnapshotListener { [weak self] snapshot, error in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.isLoading = false
+
+                    if let error {
+                        self.logger.error("Available orders listener error: \(error.localizedDescription, privacy: .public)")
+                        self.errorMessage = "Қолжетімді тапсырыстарды жүктеу қатесі: \(error.localizedDescription)"
+                        return
+                    }
+
+                    self.availableOrders = snapshot?.documents.compactMap { Order.fromDictionary($0.data()) } ?? []
+                }
+            }
+
+        driverOrdersListener = db.collection("orders")
             .whereField("driverId", isEqualTo: driverId)
             .order(by: "createdAt", descending: true)
             .addSnapshotListener { [weak self] snapshot, error in
-                guard let self = self else { return }
-                
-                if let error = error {
-                    print("Error listening to driver orders: \(error.localizedDescription)")
-                    return
-                }
-                
-                guard let documents = snapshot?.documents else { return }
-                
-                self.orders = documents.compactMap { doc -> Order? in
-                    return Order.fromDictionary(doc.data())
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.isLoading = false
+
+                    if let error {
+                        self.logger.error("Driver orders listener error: \(error.localizedDescription, privacy: .public)")
+                        self.errorMessage = "Жүргізуші тапсырыстарын жүктеу қатесі: \(error.localizedDescription)"
+                        return
+                    }
+
+                    self.myOrders = snapshot?.documents.compactMap { Order.fromDictionary($0.data()) } ?? []
                 }
             }
     }
-    
-    // MARK: - Assign Order to Driver
-    
-    func assignOrderToDriver(orderId: String, driverId: String, driverName: String, driverPhone: String? = nil) async throws {
-        var updateData: [String: Any] = [
-            "driverId": driverId,
-            "driverName": driverName,
-            "status": "inTransit"
-        ]
-        
-        if let phone = driverPhone {
-            updateData["driverPhone"] = phone
+
+    // MARK: - Assign Order to Driver (Atomic Transaction)
+
+    func assignOrderToDriver(
+        orderId: String,
+        driverId: String,
+        driverName: String,
+        driverPhone: String? = nil
+    ) async throws {
+        let orderRef = db.collection("orders").document(orderId)
+        let now = Date()
+
+        _ = try await db.runTransaction { transaction, errorPointer in
+            let snapshot: DocumentSnapshot
+            do {
+                snapshot = try transaction.getDocument(orderRef)
+            } catch let fetchError as NSError {
+                errorPointer?.pointee = fetchError
+                return nil
+            }
+
+            guard let data = snapshot.data() else {
+                errorPointer?.pointee = NSError(
+                    domain: "OrderService",
+                    code: 404,
+                    userInfo: [NSLocalizedDescriptionKey: "Тапсырыс табылмады"]
+                )
+                return nil
+            }
+
+            let existingDriver = data["driverId"] as? String
+            let currentStatus = data["status"] as? String
+            guard existingDriver == nil, currentStatus == OrderStatus.accepted.rawValue else {
+                errorPointer?.pointee = NSError(
+                    domain: "OrderService",
+                    code: 409,
+                    userInfo: [NSLocalizedDescriptionKey: "Бұл тапсырысты басқа жүргізуші қабылдап қойған"]
+                )
+                return nil
+            }
+
+            var history = data["statusHistory"] as? [[String: Any]] ?? []
+            history.append(
+                OrderStatusEvent(
+                    status: OrderStatus.inTransit.rawValue,
+                    timestamp: now,
+                    note: "Жүргізуші тағайындалды: \(driverName)"
+                ).toDict()
+            )
+
+            var updateData: [String: Any] = [
+                "driverId": driverId,
+                "driverName": driverName,
+                "status": OrderStatus.inTransit.rawValue,
+                "acceptedAt": Timestamp(date: now),
+                "updatedAt": Timestamp(date: now),
+                "statusHistory": history
+            ]
+            if let driverPhone {
+                updateData["driverPhone"] = driverPhone
+            }
+
+            transaction.updateData(updateData, forDocument: orderRef)
+            return nil
         }
-        
-        try await db.collection("orders").document(orderId).updateData(updateData)
     }
-    
+
     // MARK: - Update Order Status
-    
-    func updateOrderStatus(orderId: String, status: String) async throws {
-        var updateData: [String: Any] = ["status": status]
-        
-        if status == "delivered" {
-            updateData["deliveredAt"] = Timestamp(date: Date())
+
+    func updateOrderStatus(orderId: String, status: OrderStatus, note: String? = nil) async throws {
+        let now = Date()
+        let event = OrderStatusEvent(status: status.rawValue, timestamp: now, note: note)
+
+        var updateData: [String: Any] = [
+            "status": status.rawValue,
+            "updatedAt": Timestamp(date: now),
+            "statusHistory": FieldValue.arrayUnion([event.toDict()])
+        ]
+
+        if status == .delivered {
+            updateData["deliveredAt"] = Timestamp(date: now)
         }
-        
+
         try await db.collection("orders").document(orderId).updateData(updateData)
     }
-    
-    // MARK: - Stop Listening
-    
-    func stopListening() {
-        ordersListener?.remove()
-        ordersListener = nil
+
+    // MARK: - Cancel Order (Client)
+
+    func cancelOrder(orderId: String) async throws {
+        let now = Date()
+        let event = OrderStatusEvent(
+            status: OrderStatus.cancelled.rawValue,
+            timestamp: now,
+            note: "Клиент тапсырысты болдырмады"
+        )
+
+        try await db.collection("orders").document(orderId).updateData([
+            "status": OrderStatus.cancelled.rawValue,
+            "cancelledAt": Timestamp(date: now),
+            "updatedAt": Timestamp(date: now),
+            "statusHistory": FieldValue.arrayUnion([event.toDict()])
+        ])
     }
-    
-    // MARK: - Helper Methods
-    
+
+    // MARK: - Update Driver Live Location
+
+    func updateDriverLocation(orderId: String, coordinate: CLLocationCoordinate2D) async throws {
+        let locationData = GeoPointData(latitude: coordinate.latitude, longitude: coordinate.longitude).toDict()
+        try await db.collection("orders").document(orderId).updateData([
+            "driverLocation": locationData,
+            "updatedAt": Timestamp(date: Date())
+        ])
+    }
+
+    // MARK: - Search Order by Track Number
+
+    func searchOrder(byTrackNumber query: String) -> Order? {
+        let normalized = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else { return nil }
+        return orders.first { $0.trackNumber.lowercased() == normalized }
+    }
+
+    // MARK: - Reviews
+
+    func submitReview(
+        order: Order,
+        clientId: String,
+        clientName: String,
+        rating: Int,
+        comment: String
+    ) async throws {
+        guard let driverId = order.driverId else { return }
+        let clampedRating = min(max(rating, 1), 5)
+        let review = Review(
+            id: UUID().uuidString,
+            orderId: order.id,
+            driverId: driverId,
+            clientId: clientId,
+            clientName: clientName,
+            rating: clampedRating,
+            comment: comment.trimmingCharacters(in: .whitespacesAndNewlines),
+            createdAt: Date()
+        )
+        try await db.collection("reviews").document(review.id).setData(review.toDict())
+    }
+
+    // MARK: - Stop Listening
+
+    func stopListening() {
+        clientOrdersListener?.remove()
+        clientOrdersListener = nil
+        availableOrdersListener?.remove()
+        availableOrdersListener = nil
+        driverOrdersListener?.remove()
+        driverOrdersListener = nil
+    }
+
+    // MARK: - Helpers
+
     private func generateTrackNumber() -> String {
         let numbers = "0123456789"
-        let countryCode = "KZ"
         let randomNumbers = (0..<9).map { _ in numbers.randomElement()! }
-        return "\(countryCode)\(String(randomNumbers))"
+        return "KZ\(String(randomNumbers))"
     }
-    
+
     private func orderToDict(_ order: Order) -> [String: Any] {
         var dict: [String: Any] = [
             "id": order.id,
             "trackNumber": order.trackNumber,
             "clientId": order.clientId,
             "clientName": order.clientName,
+            "driverId": order.driverId ?? NSNull(),
             "fromAddress": order.fromAddress,
             "toAddress": order.toAddress,
             "route": order.route,
@@ -199,111 +331,40 @@ class OrderService: ObservableObject {
             "status": order.status,
             "hasInsurance": order.hasInsurance,
             "isUrgent": order.isUrgent,
+            "price": order.price,
+            "currency": order.currency,
+            "driverEarning": order.driverEarning,
             "createdAt": Timestamp(date: order.createdAt),
-            "estimatedDelivery": Timestamp(date: order.estimatedDelivery)
+            "estimatedDelivery": Timestamp(date: order.estimatedDelivery),
+            "updatedAt": Timestamp(date: order.createdAt),
+            "statusHistory": order.statusHistory.map { $0.toDict() }
         ]
-        
+
         if let clientPhone = order.clientPhone {
             dict["clientPhone"] = clientPhone
         }
-        
-        if let driverId = order.driverId {
-            dict["driverId"] = driverId
-        }
-        
         if let driverName = order.driverName {
             dict["driverName"] = driverName
         }
-        
         if let driverPhone = order.driverPhone {
             dict["driverPhone"] = driverPhone
         }
-        
         if let deliveredAt = order.deliveredAt {
             dict["deliveredAt"] = Timestamp(date: deliveredAt)
         }
-        
+        if let cancelledAt = order.cancelledAt {
+            dict["cancelledAt"] = Timestamp(date: cancelledAt)
+        }
+        if let driverLocation = order.driverLocation {
+            dict["driverLocation"] = driverLocation.toDict()
+        }
+
         return dict
     }
-    
+
     deinit {
-        stopListening()
-    }
-}
-
-// MARK: - Order Model
-
-struct Order: Identifiable, Codable {
-    let id: String
-    let trackNumber: String
-    let clientId: String
-    let clientName: String
-    let clientPhone: String?
-    var driverId: String?
-    var driverName: String?
-    var driverPhone: String?
-    let fromAddress: String
-    let toAddress: String
-    let route: String
-    let packageDescription: String
-    let weight: Double
-    let packageType: String
-    let tariffType: String
-    var status: String // "accepted", "inTransit", "atCustoms", "delivered"
-    let hasInsurance: Bool
-    let isUrgent: Bool
-    let createdAt: Date
-    let estimatedDelivery: Date
-    var deliveredAt: Date?
-    
-    static func fromDictionary(_ dict: [String: Any]) -> Order? {
-        guard let id = dict["id"] as? String,
-              let trackNumber = dict["trackNumber"] as? String,
-              let clientId = dict["clientId"] as? String,
-              let clientName = dict["clientName"] as? String,
-              let fromAddress = dict["fromAddress"] as? String,
-              let toAddress = dict["toAddress"] as? String,
-              let route = dict["route"] as? String,
-              let packageDescription = dict["packageDescription"] as? String,
-              let weight = dict["weight"] as? Double,
-              let packageType = dict["packageType"] as? String,
-              let tariffType = dict["tariffType"] as? String,
-              let status = dict["status"] as? String,
-              let hasInsurance = dict["hasInsurance"] as? Bool,
-              let isUrgent = dict["isUrgent"] as? Bool,
-              let createdAtTimestamp = dict["createdAt"] as? Timestamp,
-              let estimatedDeliveryTimestamp = dict["estimatedDelivery"] as? Timestamp else {
-            return nil
-        }
-        
-        let clientPhone = dict["clientPhone"] as? String
-        let driverId = dict["driverId"] as? String
-        let driverName = dict["driverName"] as? String
-        let driverPhone = dict["driverPhone"] as? String
-        let deliveredAtTimestamp = dict["deliveredAt"] as? Timestamp
-        
-        return Order(
-            id: id,
-            trackNumber: trackNumber,
-            clientId: clientId,
-            clientName: clientName,
-            clientPhone: clientPhone,
-            driverId: driverId,
-            driverName: driverName,
-            driverPhone: driverPhone,
-            fromAddress: fromAddress,
-            toAddress: toAddress,
-            route: route,
-            packageDescription: packageDescription,
-            weight: weight,
-            packageType: packageType,
-            tariffType: tariffType,
-            status: status,
-            hasInsurance: hasInsurance,
-            isUrgent: isUrgent,
-            createdAt: createdAtTimestamp.dateValue(),
-            estimatedDelivery: estimatedDeliveryTimestamp.dateValue(),
-            deliveredAt: deliveredAtTimestamp?.dateValue()
-        )
+        clientOrdersListener?.remove()
+        availableOrdersListener?.remove()
+        driverOrdersListener?.remove()
     }
 }

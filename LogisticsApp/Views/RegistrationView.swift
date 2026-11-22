@@ -1,103 +1,132 @@
 import SwiftUI
 
 struct RegistrationView: View {
-    @Environment(\.presentationMode) var presentationMode
+    @Environment(\.dismiss) private var dismiss
     @EnvironmentObject var authService: AuthService
-    
+
     @State private var email = ""
     @State private var password = ""
     @State private var confirmPassword = ""
     @State private var name = ""
     @State private var phone = ""
     @State private var selectedUserType: UserType = .client
+    @State private var showPassword = false
     @State private var isLoading = false
     @State private var errorMessage = ""
-    @State private var showSuccessAlert = false
-    
-    var onRegistrationSuccess: ((String, String) -> Void)?
-    
+
     var body: some View {
-        NavigationView {
+        NavigationStack {
             ScrollView {
                 VStack(spacing: 20) {
-                    // Заголовок
-                    VStack(spacing: 10) {
+                    VStack(spacing: 8) {
                         Text("Тіркелу")
                             .font(.largeTitle)
                             .fontWeight(.bold)
-                        
+
                         Text("Жаңа аккаунт жасау")
                             .font(.title3)
                             .foregroundColor(.secondary)
                     }
                     .padding(.top, 20)
-                    
-                    // Форма регистрации
+
                     VStack(spacing: 16) {
-                        // Тип аккаунта
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Аккаунт түрі")
                                 .font(.headline)
-                            
+
                             Picker("Аккаунт түрі", selection: $selectedUserType) {
                                 Text("Клиент").tag(UserType.client)
                                 Text("Жүргізуші").tag(UserType.driver)
                             }
-                            .pickerStyle(SegmentedPickerStyle())
+                            .pickerStyle(.segmented)
                         }
-                        
-                        // Имя
+
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Аты-жөні")
                                 .font(.headline)
-                            
-                            TextField("Қасым-Жомарт Тоқаев", text: $name)
-                                .textFieldStyle(RoundedBorderTextFieldStyle())
-                                .autocapitalization(.words)
+
+                            TextField("Айдар Нұрлан", text: $name)
+                                .textFieldStyle(.roundedBorder)
+                                .textInputAutocapitalization(.words)
+                                .textContentType(.name)
                         }
-                        
-                        // Телефон
+
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Телефон нөмірі")
                                 .font(.headline)
-                            
-                            TextField("77001234567", text: $phone)
-                                .textFieldStyle(RoundedBorderTextFieldStyle())
-                                .keyboardType(.numberPad)
+
+                            TextField("+77001234567", text: $phone)
+                                .textFieldStyle(.roundedBorder)
+                                .keyboardType(.phonePad)
+                                .textContentType(.telephoneNumber)
+
+                            if !phone.isEmpty && !AuthValidation.isValidPhone(phone) {
+                                Text("Мысалы: +77001234567 немесе 87001234567")
+                                    .font(.caption)
+                                    .foregroundColor(.orange)
+                            }
                         }
-                        
-                        // Email
+
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Электрондық пошта")
                                 .font(.headline)
-                            
+
                             TextField("example@domain.com", text: $email)
-                                .textFieldStyle(RoundedBorderTextFieldStyle())
+                                .textFieldStyle(.roundedBorder)
                                 .keyboardType(.emailAddress)
-                                .autocapitalization(.none)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .textContentType(.emailAddress)
                         }
-                        
-                        // Пароль
+
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Құпия сөз")
                                 .font(.headline)
-                            
-                            SecureField("Құпия сөз енгізіңіз", text: $password)
-                                .textFieldStyle(RoundedBorderTextFieldStyle())
+
+                            HStack {
+                                Group {
+                                    if showPassword {
+                                        TextField("Кемінде 6 таңба", text: $password)
+                                    } else {
+                                        SecureField("Кемінде 6 таңба", text: $password)
+                                    }
+                                }
+                                .textContentType(.newPassword)
+
+                                Button {
+                                    showPassword.toggle()
+                                } label: {
+                                    Image(systemName: showPassword ? "eye.slash" : "eye")
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .background(Color(.secondarySystemGroupedBackground))
+                            .cornerRadius(8)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(Color(.separator), lineWidth: 0.5)
+                            )
                         }
-                        
-                        // Подтверждение пароля
+
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Құпия сөзді растау")
                                 .font(.headline)
-                            
+
                             SecureField("Құпия сөзді қайта енгізіңіз", text: $confirmPassword)
-                                .textFieldStyle(RoundedBorderTextFieldStyle())
+                                .textFieldStyle(.roundedBorder)
+                                .textContentType(.newPassword)
+
+                            if !confirmPassword.isEmpty && password != confirmPassword {
+                                Text("Құпия сөздер сәйкес келмейді")
+                                    .font(.caption)
+                                    .foregroundColor(.red)
+                            }
                         }
                     }
                     .padding(.horizontal)
-                    
-                    // Валидационные сообщения
+
                     if !errorMessage.isEmpty {
                         Text(errorMessage)
                             .foregroundColor(.red)
@@ -105,8 +134,7 @@ struct RegistrationView: View {
                             .multilineTextAlignment(.center)
                             .padding(.horizontal)
                     }
-                    
-                    // Кнопка регистрации
+
                     Button(action: register) {
                         if isLoading {
                             ProgressView()
@@ -122,87 +150,60 @@ struct RegistrationView: View {
                     .padding()
                     .background(isFormValid ? Color.blue : Color.gray)
                     .foregroundColor(.white)
-                    .cornerRadius(10)
+                    .cornerRadius(12)
                     .padding(.horizontal)
                     .disabled(!isFormValid || isLoading)
-                    
-                    // Ссылка на вход
+
                     Button("Аккаунтыңыз бар ма? Кіру") {
-                        presentationMode.wrappedValue.dismiss()
+                        dismiss()
                     }
                     .frame(maxWidth: .infinity)
                     .padding()
                     .foregroundColor(.blue)
-                    .background(Color.gray.opacity(0.1))
-                    .cornerRadius(10)
+                    .background(Color(.secondarySystemGroupedBackground))
+                    .cornerRadius(12)
                     .padding(.horizontal)
                     .padding(.bottom, 20)
                 }
             }
-            .navigationBarTitle("Тіркелу", displayMode: .inline)
-            .navigationBarItems(
-                leading: Button("Бас тарту") {
-                    presentationMode.wrappedValue.dismiss()
+            .background(Color(.systemGroupedBackground))
+            .navigationTitle("Тіркелу")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Бас тарту") {
+                        dismiss()
+                    }
                 }
-                .foregroundColor(.blue)
-            )
-            .alert("Тіркелу сәтті аяқталды!", isPresented: $showSuccessAlert) {
-                Button("OK", role: .cancel) {
-                    // Передаем данные на страницу входа и закрываем форму
-                    onRegistrationSuccess?(email, password)
-                    presentationMode.wrappedValue.dismiss()
-                }
-            } message: {
-                Text("Енді жаңа деректеріңізбен кіріңіз")
             }
         }
     }
-    
-    // Проверка валидности формы
+
     private var isFormValid: Bool {
-        !name.isEmpty &&
-        !phone.isEmpty &&
-        phone.count == 11 &&
-        !email.isEmpty &&
-        !password.isEmpty &&
-        !confirmPassword.isEmpty &&
-        password == confirmPassword &&
-        password.count >= 6
+        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        AuthValidation.isValidPhone(phone) &&
+        !email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        AuthValidation.isValidPassword(password) &&
+        password == confirmPassword
     }
-    
-    // RegistrationView.swift - өзгерістер
 
     private func register() {
         errorMessage = ""
         isLoading = true
-        
-        // Телефонды халықаралық форматқа түрлендіру
-        let formattedPhone = "+7\(phone.dropFirst(1))"
-        
+
         authService.register(
             email: email,
             password: password,
-            name: name.trimmingCharacters(in: .whitespacesAndNewlines),
-            phone: formattedPhone,
+            name: name,
+            phone: phone,
             userType: selectedUserType
         ) { success, message in
             isLoading = false
-            
             if success {
-                showSuccessAlert = true
+                dismiss()
             } else {
                 errorMessage = message ?? "Тіркелу кезінде қате орын алды"
             }
         }
-    }
-    
-    private func clearForm() {
-        email = ""
-        password = ""
-        confirmPassword = ""
-        name = ""
-        phone = ""
-        selectedUserType = .client
-        errorMessage = ""
     }
 }
