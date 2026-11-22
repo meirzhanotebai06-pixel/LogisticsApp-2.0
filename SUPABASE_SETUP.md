@@ -34,9 +34,10 @@
 
 1. Откройте **Project Settings → API** в панели Supabase.
 2. Скопируйте:
-   - **Project URL** (`https://xxxxxxxxxxxx.supabase.co`)
-   - **anon / public key** (`eyJ...`)
-3. Откройте [SupabaseConfig.swift](file:///workspaces/LogisticsApp-2.0/LogisticsApp/Services/SupabaseConfig.swift) и вставьте ваши значения в `defaultURL` и `defaultAnonKey`.
+   - **Project URL** (`https://xxxxxxxxxxxx.supabase.co` — без `/rest/v1/`)
+   - **anon / publishable key**
+3. Скопируйте шаблон [Secrets.example.plist](file:///workspaces/LogisticsApp-2.0/LogisticsApp/Secrets.example.plist) в `LogisticsApp/Secrets.plist` и вставьте туда ваши `SUPABASE_URL` и `SUPABASE_ANON_KEY`.
+   Файл `LogisticsApp/Secrets.plist` добавлен в `.gitignore` и не попадёт в GitHub.
 
 ---
 

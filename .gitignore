@@ -45,3 +45,7 @@ __pycache__/
 # IDEs
 .vscode/
 .idea/
+
+# Secrets
+LogisticsApp/Secrets.plist
+Secrets.plist
