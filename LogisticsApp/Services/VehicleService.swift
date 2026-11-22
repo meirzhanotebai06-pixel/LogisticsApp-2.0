@@ -1,58 +1,71 @@
 import Foundation
 import Combine
-import FirebaseFirestore
+import Supabase
 
 @MainActor
 class VehicleService: ObservableObject {
-    private let db = Firestore.firestore()
+    private let client = SupabaseManager.client
     @Published var isLoading = false
 
-    // MARK: - Save Vehicle Info
+    // MARK: - Save Vehicle Basic Info
 
-    func saveVehicleInfo(userId: String, vehicleInfo: VehicleInfo) async throws {
-        let vehicleData: [String: Any] = [
-            "model": vehicleInfo.model,
-            "plateNumber": vehicleInfo.plateNumber,
-            "capacity": vehicleInfo.capacity,
-            "documents": vehicleInfo.documents != nil ? documentsToDict(vehicleInfo.documents!) : [:]
-        ]
+    func saveVehicleBasicInfo(userId: String, model: String, plateNumber: String, capacity: String) async throws {
+        let row = VehicleRow(
+            driverId: userId.lowercased(),
+            model: model.trimmingCharacters(in: .whitespacesAndNewlines),
+            plateNumber: plateNumber.trimmingCharacters(in: .whitespacesAndNewlines).uppercased(),
+            capacity: capacity.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
 
-        try await db.collection("users").document(userId).updateData([
-            "vehicleInfo": vehicleData
-        ])
+        try await client
+            .from("vehicles")
+            .upsert(row, onConflict: "driver_id")
+            .execute()
     }
 
     // MARK: - Save Document
 
     func saveDocument(userId: String, documentType: DocumentType, documentInfo: DocumentInfo) async throws {
-        let fieldPath = "vehicleInfo.documents.\(documentType.fieldName)"
+        let row = DriverDocumentRow.from(
+            driverId: userId.lowercased(),
+            type: documentType,
+            info: documentInfo
+        )
 
-        try await db.collection("users").document(userId).updateData([
-            fieldPath: documentInfoToDict(documentInfo)
-        ])
-    }
-
-    // MARK: - Save Vehicle Basic Info
-
-    func saveVehicleBasicInfo(userId: String, model: String, plateNumber: String, capacity: String) async throws {
-        try await db.collection("users").document(userId).updateData([
-            "vehicleInfo.model": model.trimmingCharacters(in: .whitespacesAndNewlines),
-            "vehicleInfo.plateNumber": plateNumber.trimmingCharacters(in: .whitespacesAndNewlines).uppercased(),
-            "vehicleInfo.capacity": capacity.trimmingCharacters(in: .whitespacesAndNewlines)
-        ])
+        try await client
+            .from("driver_documents")
+            .upsert(row, onConflict: "driver_id,document_type")
+            .execute()
     }
 
     // MARK: - Load Vehicle Info
 
     func loadVehicleInfo(userId: String) async throws -> VehicleInfo? {
-        let document = try await db.collection("users").document(userId).getDocument()
+        let uid = userId.lowercased()
 
-        guard let data = document.data(),
-              let vehicleInfoDict = data["vehicleInfo"] as? [String: Any] else {
-            return nil
-        }
+        let vehicles: [VehicleRow] = try await client
+            .from("vehicles")
+            .select()
+            .eq("driver_id", value: uid)
+            .limit(1)
+            .execute()
+            .value
 
-        return VehicleInfo.fromDictionary(vehicleInfoDict)
+        guard let vehicle = vehicles.first else { return nil }
+
+        let docRows: [DriverDocumentRow] = try await client
+            .from("driver_documents")
+            .select()
+            .eq("driver_id", value: uid)
+            .execute()
+            .value
+
+        return VehicleInfo(
+            model: vehicle.model,
+            plateNumber: vehicle.plateNumber,
+            capacity: vehicle.capacity,
+            documents: VehicleDocuments.from(rows: docRows)
+        )
     }
 
     // MARK: - Check Document Expiry
@@ -68,15 +81,12 @@ class VehicleService: ObservableObject {
         if let insurance = documents.insurance, let days = insurance.daysUntilExpiry, days <= 30 && !insurance.isExpired {
             expiringDocs.append("Сақтандыру")
         }
-
         if let license = documents.driverLicense, let days = license.daysUntilExpiry, days <= 30 && !license.isExpired {
             expiringDocs.append("Жүргізуші куәлігі")
         }
-
         if let registration = documents.vehicleRegistration, let days = registration.daysUntilExpiry, days <= 30 && !registration.isExpired {
             expiringDocs.append("Техпаспорт")
         }
-
         if let inspection = documents.technicalInspection, let days = inspection.daysUntilExpiry, days <= 30 && !inspection.isExpired {
             expiringDocs.append("Техосмотр")
         }
@@ -102,56 +112,5 @@ class VehicleService: ObservableObject {
             guard let document = doc else { return false }
             return document.isVerified && !document.isExpired
         }
-    }
-
-    // MARK: - Helper Methods
-
-    private func documentsToDict(_ documents: VehicleDocuments) -> [String: Any] {
-        var dict: [String: Any] = [:]
-
-        if let insurance = documents.insurance {
-            dict["insurance"] = documentInfoToDict(insurance)
-        }
-        if let license = documents.driverLicense {
-            dict["driverLicense"] = documentInfoToDict(license)
-        }
-        if let registration = documents.vehicleRegistration {
-            dict["vehicleRegistration"] = documentInfoToDict(registration)
-        }
-        if let inspection = documents.technicalInspection {
-            dict["technicalInspection"] = documentInfoToDict(inspection)
-        }
-
-        return dict
-    }
-
-    private func documentInfoToDict(_ doc: DocumentInfo) -> [String: Any] {
-        var dict: [String: Any] = [
-            "number": doc.number,
-            "isVerified": doc.isVerified
-        ]
-
-        if let expiryDate = doc.expiryDate {
-            dict["expiryDate"] = Timestamp(date: expiryDate)
-        }
-        if let fileURL = doc.fileURL { dict["fileURL"] = fileURL }
-        if let uploadDate = doc.uploadDate { dict["uploadDate"] = Timestamp(date: uploadDate) }
-        if let verificationStatus = doc.verificationStatus { dict["verificationStatus"] = verificationStatus }
-        if let rejectionReason = doc.rejectionReason { dict["rejectionReason"] = rejectionReason }
-        if let issueDate = doc.issueDate { dict["issueDate"] = Timestamp(date: issueDate) }
-        if let issuedBy = doc.issuedBy { dict["issuedBy"] = issuedBy }
-        if let fullName = doc.fullName { dict["fullName"] = fullName }
-        if let iin = doc.iin { dict["iin"] = iin }
-        if let category = doc.category { dict["category"] = category }
-        if let insuranceType = doc.insuranceType { dict["insuranceType"] = insuranceType }
-        if let insuranceCompany = doc.insuranceCompany { dict["insuranceCompany"] = insuranceCompany }
-        if let vin = doc.vin { dict["vin"] = vin }
-        if let vehicleYear = doc.vehicleYear { dict["vehicleYear"] = vehicleYear }
-        if let color = doc.color { dict["color"] = color }
-        if let engineNumber = doc.engineNumber { dict["engineNumber"] = engineNumber }
-        if let capacity = doc.capacity { dict["capacity"] = capacity }
-        if let inspectionCenter = doc.inspectionCenter { dict["inspectionCenter"] = inspectionCenter }
-
-        return dict
     }
 }

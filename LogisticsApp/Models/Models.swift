@@ -1,10 +1,9 @@
 import Foundation
 import CoreLocation
-import FirebaseFirestore
 
 // MARK: - User Models
 
-struct User: Codable, Identifiable {
+struct AppUser: Codable, Identifiable {
     let id: String
     let email: String
     let name: String
@@ -13,33 +12,6 @@ struct User: Codable, Identifiable {
     let vehicleInfo: VehicleInfo?
     let isOnDuty: Bool?
     let rating: Double?
-
-    static func fromDictionary(_ dict: [String: Any]) -> User? {
-        guard let id = dict["id"] as? String,
-              let email = dict["email"] as? String,
-              let name = dict["name"] as? String,
-              let userTypeRaw = dict["userType"] as? String,
-              let userType = UserType(rawValue: userTypeRaw) else {
-            return nil
-        }
-
-        let phone = dict["phone"] as? String
-        let vehicleInfoDict = dict["vehicleInfo"] as? [String: Any]
-        let vehicleInfo = vehicleInfoDict.flatMap { VehicleInfo.fromDictionary($0) }
-        let isOnDuty = dict["isOnDuty"] as? Bool
-        let rating = (dict["rating"] as? NSNumber)?.doubleValue
-
-        return User(
-            id: id,
-            email: email,
-            name: name,
-            userType: userType,
-            phone: phone,
-            vehicleInfo: vehicleInfo,
-            isOnDuty: isOnDuty,
-            rating: rating
-        )
-    }
 }
 
 struct VehicleInfo: Codable {
@@ -47,24 +19,6 @@ struct VehicleInfo: Codable {
     let plateNumber: String
     let capacity: String
     let documents: VehicleDocuments?
-
-    static func fromDictionary(_ dict: [String: Any]) -> VehicleInfo? {
-        guard let model = dict["model"] as? String,
-              let plateNumber = dict["plateNumber"] as? String,
-              let capacity = dict["capacity"] as? String else {
-            return nil
-        }
-
-        let documentsDict = dict["documents"] as? [String: Any]
-        let documents = documentsDict.flatMap { VehicleDocuments.fromDictionary($0) }
-
-        return VehicleInfo(
-            model: model,
-            plateNumber: plateNumber,
-            capacity: capacity,
-            documents: documents
-        )
-    }
 }
 
 struct VehicleDocuments: Codable {
@@ -72,20 +26,6 @@ struct VehicleDocuments: Codable {
     let driverLicense: DocumentInfo?
     let vehicleRegistration: DocumentInfo?
     let technicalInspection: DocumentInfo?
-
-    static func fromDictionary(_ dict: [String: Any]) -> VehicleDocuments? {
-        let insurance = (dict["insurance"] as? [String: Any]).flatMap { DocumentInfo.fromDictionary($0) }
-        let driverLicense = (dict["driverLicense"] as? [String: Any]).flatMap { DocumentInfo.fromDictionary($0) }
-        let vehicleRegistration = (dict["vehicleRegistration"] as? [String: Any]).flatMap { DocumentInfo.fromDictionary($0) }
-        let technicalInspection = (dict["technicalInspection"] as? [String: Any]).flatMap { DocumentInfo.fromDictionary($0) }
-
-        return VehicleDocuments(
-            insurance: insurance,
-            driverLicense: driverLicense,
-            vehicleRegistration: vehicleRegistration,
-            technicalInspection: technicalInspection
-        )
-    }
 }
 
 enum DocumentType: String, CaseIterable, Identifiable {
@@ -132,27 +72,22 @@ struct DocumentInfo: Codable {
     let verificationStatus: String?
     let rejectionReason: String?
 
-    // Additional fields for different document types
     let issueDate: Date?
     let issuedBy: String?
 
-    // Driver license fields
     let fullName: String?
     let iin: String?
     let category: String?
 
-    // Insurance fields
     let insuranceType: String?
     let insuranceCompany: String?
 
-    // Vehicle registration fields
     let vin: String?
     let vehicleYear: String?
     let color: String?
     let engineNumber: String?
     let capacity: String?
 
-    // Technical inspection fields
     let inspectionCenter: String?
 
     var isExpired: Bool {
@@ -162,62 +97,7 @@ struct DocumentInfo: Codable {
 
     var daysUntilExpiry: Int? {
         guard let expiryDate else { return nil }
-        let calendar = Calendar.current
-        return calendar.dateComponents([.day], from: Date(), to: expiryDate).day
-    }
-
-    static func fromDictionary(_ dict: [String: Any]) -> DocumentInfo? {
-        guard let number = dict["number"] as? String,
-              let isVerified = dict["isVerified"] as? Bool else {
-            return nil
-        }
-
-        let expiryDate = (dict["expiryDate"] as? Timestamp)?.dateValue()
-        let fileURL = dict["fileURL"] as? String
-        let uploadTimestamp = dict["uploadDate"] as? Timestamp
-        let verificationStatus = dict["verificationStatus"] as? String
-        let rejectionReason = dict["rejectionReason"] as? String
-
-        let issueTimestamp = dict["issueDate"] as? Timestamp
-        let issuedBy = dict["issuedBy"] as? String
-
-        let fullName = dict["fullName"] as? String
-        let iin = dict["iin"] as? String
-        let category = dict["category"] as? String
-
-        let insuranceType = dict["insuranceType"] as? String
-        let insuranceCompany = dict["insuranceCompany"] as? String
-
-        let vin = dict["vin"] as? String
-        let vehicleYear = dict["vehicleYear"] as? String
-        let color = dict["color"] as? String
-        let engineNumber = dict["engineNumber"] as? String
-        let capacity = dict["capacity"] as? String
-
-        let inspectionCenter = dict["inspectionCenter"] as? String
-
-        return DocumentInfo(
-            number: number,
-            expiryDate: expiryDate,
-            isVerified: isVerified,
-            fileURL: fileURL,
-            uploadDate: uploadTimestamp?.dateValue(),
-            verificationStatus: verificationStatus,
-            rejectionReason: rejectionReason,
-            issueDate: issueTimestamp?.dateValue(),
-            issuedBy: issuedBy,
-            fullName: fullName,
-            iin: iin,
-            category: category,
-            insuranceType: insuranceType,
-            insuranceCompany: insuranceCompany,
-            vin: vin,
-            vehicleYear: vehicleYear,
-            color: color,
-            engineNumber: engineNumber,
-            capacity: capacity,
-            inspectionCenter: inspectionCenter
-        )
+        return Calendar.current.dateComponents([.day], from: Date(), to: expiryDate).day
     }
 }
 
@@ -232,6 +112,176 @@ enum UserType: String, Codable {
         case .driver: return "Жүргізуші"
         case .admin: return "Администратор"
         }
+    }
+}
+
+// MARK: - PostgreSQL Row DTOs
+
+struct ProfileRow: Codable {
+    let id: String
+    let email: String
+    let name: String
+    let userType: String
+    let phone: String?
+    let isOnDuty: Bool?
+    let rating: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case email
+        case name
+        case userType = "user_type"
+        case phone
+        case isOnDuty = "is_on_duty"
+        case rating
+    }
+
+    func toAppUser(vehicleInfo: VehicleInfo?) -> AppUser? {
+        guard let role = UserType(rawValue: userType) else { return nil }
+        return AppUser(
+            id: id,
+            email: email,
+            name: name,
+            userType: role,
+            phone: phone,
+            vehicleInfo: vehicleInfo,
+            isOnDuty: isOnDuty,
+            rating: rating
+        )
+    }
+}
+
+struct VehicleRow: Codable {
+    let driverId: String
+    let model: String
+    let plateNumber: String
+    let capacity: String
+
+    enum CodingKeys: String, CodingKey {
+        case driverId = "driver_id"
+        case model
+        case plateNumber = "plate_number"
+        case capacity
+    }
+}
+
+struct DriverDocumentRow: Codable {
+    let driverId: String
+    let documentType: String
+    let number: String
+    let expiryDate: Date?
+    let isVerified: Bool
+    let verificationStatus: String?
+    let rejectionReason: String?
+    let fileURL: String?
+    let uploadDate: Date?
+    let issueDate: Date?
+    let issuedBy: String?
+    let fullName: String?
+    let iin: String?
+    let category: String?
+    let insuranceType: String?
+    let insuranceCompany: String?
+    let vin: String?
+    let vehicleYear: String?
+    let color: String?
+    let engineNumber: String?
+    let capacity: String?
+    let inspectionCenter: String?
+
+    enum CodingKeys: String, CodingKey {
+        case driverId = "driver_id"
+        case documentType = "document_type"
+        case number
+        case expiryDate = "expiry_date"
+        case isVerified = "is_verified"
+        case verificationStatus = "verification_status"
+        case rejectionReason = "rejection_reason"
+        case fileURL = "file_url"
+        case uploadDate = "upload_date"
+        case issueDate = "issue_date"
+        case issuedBy = "issued_by"
+        case fullName = "full_name"
+        case iin
+        case category
+        case insuranceType = "insurance_type"
+        case insuranceCompany = "insurance_company"
+        case vin
+        case vehicleYear = "vehicle_year"
+        case color
+        case engineNumber = "engine_number"
+        case capacity
+        case inspectionCenter = "inspection_center"
+    }
+
+    func toDocumentInfo() -> DocumentInfo {
+        DocumentInfo(
+            number: number,
+            expiryDate: expiryDate,
+            isVerified: isVerified,
+            fileURL: fileURL,
+            uploadDate: uploadDate,
+            verificationStatus: verificationStatus,
+            rejectionReason: rejectionReason,
+            issueDate: issueDate,
+            issuedBy: issuedBy,
+            fullName: fullName,
+            iin: iin,
+            category: category,
+            insuranceType: insuranceType,
+            insuranceCompany: insuranceCompany,
+            vin: vin,
+            vehicleYear: vehicleYear,
+            color: color,
+            engineNumber: engineNumber,
+            capacity: capacity,
+            inspectionCenter: inspectionCenter
+        )
+    }
+
+    static func from(driverId: String, type: DocumentType, info: DocumentInfo) -> DriverDocumentRow {
+        DriverDocumentRow(
+            driverId: driverId,
+            documentType: type.fieldName,
+            number: info.number,
+            expiryDate: info.expiryDate,
+            isVerified: info.isVerified,
+            verificationStatus: info.verificationStatus,
+            rejectionReason: info.rejectionReason,
+            fileURL: info.fileURL,
+            uploadDate: info.uploadDate,
+            issueDate: info.issueDate,
+            issuedBy: info.issuedBy,
+            fullName: info.fullName,
+            iin: info.iin,
+            category: info.category,
+            insuranceType: info.insuranceType,
+            insuranceCompany: info.insuranceCompany,
+            vin: info.vin,
+            vehicleYear: info.vehicleYear,
+            color: info.color,
+            engineNumber: info.engineNumber,
+            capacity: info.capacity,
+            inspectionCenter: info.inspectionCenter
+        )
+    }
+}
+
+extension VehicleDocuments {
+    static func from(rows: [DriverDocumentRow]) -> VehicleDocuments? {
+        guard !rows.isEmpty else { return nil }
+        var byType: [DocumentType: DocumentInfo] = [:]
+        for row in rows {
+            if let type = DocumentType(rawValue: row.documentType) {
+                byType[type] = row.toDocumentInfo()
+            }
+        }
+        return VehicleDocuments(
+            insurance: byType[.insurance],
+            driverLicense: byType[.driverLicense],
+            vehicleRegistration: byType[.vehicleRegistration],
+            technicalInspection: byType[.technicalInspection]
+        )
     }
 }
 

@@ -1,6 +1,6 @@
 import Foundation
 import Combine
-import FirebaseFirestore
+import Supabase
 
 enum DocumentVerificationStatus: String {
     case pending
@@ -10,61 +10,139 @@ enum DocumentVerificationStatus: String {
 
 @MainActor
 final class AdminService: ObservableObject {
-    @Published var drivers: [User] = []
+    @Published var drivers: [AppUser] = []
     @Published var allOrders: [Order] = []
     @Published var isLoading = false
     @Published var errorMessage: String?
     @Published var updatingDocumentKey: String?
     @Published var updatingOrderId: String?
 
-    private let db = Firestore.firestore()
-    private var driversListener: ListenerRegistration?
-    private var ordersListener: ListenerRegistration?
+    private let client = SupabaseManager.client
+    private var realtimeChannel: RealtimeChannelV2?
+    private var realtimeTask: Task<Void, Never>?
 
     func startListening() {
         stopListening()
         isLoading = true
 
-        driversListener = db.collection("users")
-            .whereField("userType", isEqualTo: UserType.driver.rawValue)
-            .addSnapshotListener { [weak self] snapshot, error in
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    self.isLoading = false
+        Task {
+            await reloadAll()
+            isLoading = false
+        }
 
-                    if let error {
-                        self.errorMessage = "Жүргізушілерді жүктеу сәтсіз: \(error.localizedDescription)"
-                        return
+        let channel = client.channel("admin-\(UUID().uuidString)")
+        let orderChanges = channel.postgresChange(AnyAction.self, schema: "public", table: "orders")
+        let docChanges = channel.postgresChange(AnyAction.self, schema: "public", table: "driver_documents")
+        self.realtimeChannel = channel
+
+        realtimeTask = Task { [weak self] in
+            await channel.subscribe()
+            await withTaskGroup(of: Void.self) { group in
+                group.addTask { [weak self] in
+                    for await _ in orderChanges {
+                        if Task.isCancelled { return }
+                        await self?.reloadOrders()
                     }
-
-                    self.drivers = snapshot?.documents
-                        .compactMap { User.fromDictionary($0.data()) }
-                        .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending } ?? []
+                }
+                group.addTask { [weak self] in
+                    for await _ in docChanges {
+                        if Task.isCancelled { return }
+                        await self?.reloadDrivers()
+                    }
                 }
             }
-
-        ordersListener = db.collection("orders")
-            .order(by: "createdAt", descending: true)
-            .addSnapshotListener { [weak self] snapshot, error in
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-
-                    if let error {
-                        self.errorMessage = "Тапсырыстарды жүктеу сәтсіз: \(error.localizedDescription)"
-                        return
-                    }
-
-                    self.allOrders = snapshot?.documents
-                        .compactMap { Order.fromDictionary($0.data()) } ?? []
-                }
-            }
+        }
     }
 
     func stopListening() {
-        driversListener?.remove()
-        driversListener = nil
-        ordersListener?.remove()
-        ordersListener = nil
+        realtimeTask?.cancel()
+        realtimeTask = nil
+        if let channel = realtimeChannel {
+            realtimeChannel = nil
+            Task {
+                await client.removeChannel(channel)
+            }
+        }
+    }
+
+    private func reloadAll() async {
+        await reloadDrivers()
+        await reloadOrders()
+    }
+
+    private func reloadDrivers() async {
+        do {
+            let profiles: [ProfileRow] = try await client
+                .from("profiles")
+                .select()
+                .eq("user_type", value: UserType.driver.rawValue)
+                .order("name", ascending: true)
+                .execute()
+                .value
+
+            let vehicles: [VehicleRow] = try await client
+                .from("vehicles")
+                .select()
+                .execute()
+                .value
+
+            let docRows: [DriverDocumentRow] = try await client
+                .from("driver_documents")
+                .select()
+                .execute()
+                .value
+
+            let vehicleByDriver = Dictionary(uniqueKeysWithValues: vehicles.map { ($0.driverId, $0) })
+            let docsByDriver = Dictionary(grouping: docRows, by: \.driverId)
+
+            self.drivers = profiles.compactMap { profile in
+                let docs = VehicleDocuments.from(rows: docsByDriver[profile.id] ?? [])
+                let vehicleInfo: VehicleInfo?
+                if let vehicle = vehicleByDriver[profile.id] {
+                    vehicleInfo = VehicleInfo(
+                        model: vehicle.model,
+                        plateNumber: vehicle.plateNumber,
+                        capacity: vehicle.capacity,
+                        documents: docs
+                    )
+                } else {
+                    vehicleInfo = nil
+                }
+                return profile.toAppUser(vehicleInfo: vehicleInfo)
+            }
+        } catch {
+            errorMessage = "Жүргізушілерді жүктеу сәтсіз: \(error.localizedDescription)"
+        }
+    }
+
+    private func reloadOrders() async {
+        do {
+            let orderRows: [OrderRow] = try await client
+                .from("orders")
+                .select()
+                .order("created_at", ascending: false)
+                .execute()
+                .value
+
+            let orderIds = orderRows.map(\.id)
+            var groupedEvents: [String: [OrderStatusEvent]] = [:]
+            if !orderIds.isEmpty {
+                let events: [OrderStatusEventRow] = try await client
+                    .from("order_status_events")
+                    .select()
+                    .in("order_id", values: orderIds)
+                    .order("created_at", ascending: true)
+                    .execute()
+                    .value
+                for row in events {
+                    groupedEvents[row.orderId, default: []].append(row.toEvent())
+                }
+            }
+
+            self.allOrders = orderRows.map { $0.toOrder(events: groupedEvents[$0.id] ?? []) }
+        } catch {
+            errorMessage = "Тапсырыстарды жүктеу сәтсіз: \(error.localizedDescription)"
+        }
     }
 
     func reviewDocument(
@@ -77,21 +155,37 @@ final class AdminService: ObservableObject {
         updatingDocumentKey = key
         defer { updatingDocumentKey = nil }
 
-        let fieldPath = "vehicleInfo.documents.\(documentType.fieldName)"
-        var updates: [String: Any] = [
-            "\(fieldPath).isVerified": status == .approved,
-            "\(fieldPath).verificationStatus": status.rawValue,
-            "\(fieldPath).verifiedAt": FieldValue.serverTimestamp()
-        ]
+        struct ReviewUpdatePayload: Encodable {
+            let isVerified: Bool
+            let verificationStatus: String
+            let rejectionReason: String?
+            let verifiedAt: Date
 
-        if status == .rejected, let rejectionReason, !rejectionReason.isEmpty {
-            updates["\(fieldPath).rejectionReason"] = rejectionReason
-        } else {
-            updates["\(fieldPath).rejectionReason"] = FieldValue.delete()
+            enum CodingKeys: String, CodingKey {
+                case isVerified = "is_verified"
+                case verificationStatus = "verification_status"
+                case rejectionReason = "rejection_reason"
+                case verifiedAt = "verified_at"
+            }
         }
 
+        let cleanReason = (status == .rejected && !(rejectionReason ?? "").isEmpty) ? rejectionReason : nil
+        let payload = ReviewUpdatePayload(
+            isVerified: status == .approved,
+            verificationStatus: status.rawValue,
+            rejectionReason: cleanReason,
+            verifiedAt: Date()
+        )
+
         do {
-            try await db.collection("users").document(driverId).updateData(updates)
+            try await client
+                .from("driver_documents")
+                .update(payload)
+                .eq("driver_id", value: driverId)
+                .eq("document_type", value: documentType.fieldName)
+                .execute()
+
+            await reloadDrivers()
         } catch {
             errorMessage = "Құжат статусын өзгерту сәтсіз: \(error.localizedDescription)"
         }
@@ -101,20 +195,35 @@ final class AdminService: ObservableObject {
         updatingOrderId = orderId
         defer { updatingOrderId = nil }
 
-        let now = Date()
-        let event = OrderStatusEvent(
-            status: OrderStatus.cancelled.rawValue,
-            timestamp: now,
-            note: "Администратор тапсырысты болдырмады"
-        )
+        struct AdminCancelPayload: Encodable {
+            let status: String
+            let cancelledAt: Date
+            let updatedAt: Date
 
+            enum CodingKeys: String, CodingKey {
+                case status
+                case cancelledAt = "cancelled_at"
+                case updatedAt = "updated_at"
+            }
+        }
+
+        let now = Date()
         do {
-            try await db.collection("orders").document(orderId).updateData([
-                "status": OrderStatus.cancelled.rawValue,
-                "cancelledAt": Timestamp(date: now),
-                "updatedAt": Timestamp(date: now),
-                "statusHistory": FieldValue.arrayUnion([event.toDict()])
-            ])
+            try await client
+                .from("orders")
+                .update(AdminCancelPayload(status: OrderStatus.cancelled.rawValue, cancelledAt: now, updatedAt: now))
+                .eq("id", value: orderId)
+                .execute()
+
+            let eventRow = OrderStatusEventRow(
+                id: UUID().uuidString.lowercased(),
+                orderId: orderId,
+                status: OrderStatus.cancelled.rawValue,
+                note: "Администратор тапсырысты болдырмады",
+                createdAt: now
+            )
+            try await client.from("order_status_events").insert(eventRow).execute()
+            await reloadOrders()
         } catch {
             errorMessage = "Тапсырысты болдырмау сәтсіз: \(error.localizedDescription)"
         }
@@ -124,31 +233,61 @@ final class AdminService: ObservableObject {
         updatingOrderId = orderId
         defer { updatingOrderId = nil }
 
-        let now = Date()
-        let event = OrderStatusEvent(
-            status: OrderStatus.accepted.rawValue,
-            timestamp: now,
-            note: "Администратор жүргізушіні босатты"
-        )
+        struct UnassignPayload: Encodable {
+            let driverId: String? = nil
+            let driverName: String? = nil
+            let driverPhone: String? = nil
+            let driverLatitude: Double? = nil
+            let driverLongitude: Double? = nil
+            let status: String
+            let updatedAt: Date
 
+            enum CodingKeys: String, CodingKey {
+                case driverId = "driver_id"
+                case driverName = "driver_name"
+                case driverPhone = "driver_phone"
+                case driverLatitude = "driver_latitude"
+                case driverLongitude = "driver_longitude"
+                case status
+                case updatedAt = "updated_at"
+            }
+
+            func encode(to encoder: Encoder) throws {
+                var container = encoder.container(keyedBy: CodingKeys.self)
+                try container.encodeNil(forKey: .driverId)
+                try container.encodeNil(forKey: .driverName)
+                try container.encodeNil(forKey: .driverPhone)
+                try container.encodeNil(forKey: .driverLatitude)
+                try container.encodeNil(forKey: .driverLongitude)
+                try container.encode(status, forKey: .status)
+                try container.encode(updatedAt, forKey: .updatedAt)
+            }
+        }
+
+        let now = Date()
         do {
-            try await db.collection("orders").document(orderId).updateData([
-                "driverId": NSNull(),
-                "driverName": FieldValue.delete(),
-                "driverPhone": FieldValue.delete(),
-                "driverLocation": FieldValue.delete(),
-                "status": OrderStatus.accepted.rawValue,
-                "updatedAt": Timestamp(date: now),
-                "statusHistory": FieldValue.arrayUnion([event.toDict()])
-            ])
+            try await client
+                .from("orders")
+                .update(UnassignPayload(status: OrderStatus.accepted.rawValue, updatedAt: now))
+                .eq("id", value: orderId)
+                .execute()
+
+            let eventRow = OrderStatusEventRow(
+                id: UUID().uuidString.lowercased(),
+                orderId: orderId,
+                status: OrderStatus.accepted.rawValue,
+                note: "Администратор жүргізушіні босатты",
+                createdAt: now
+            )
+            try await client.from("order_status_events").insert(eventRow).execute()
+            await reloadOrders()
         } catch {
             errorMessage = "Жүргізушіні босату сәтсіз: \(error.localizedDescription)"
         }
     }
 
     deinit {
-        driversListener?.remove()
-        ordersListener?.remove()
+        realtimeTask?.cancel()
     }
 }
 

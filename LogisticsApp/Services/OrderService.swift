@@ -2,11 +2,11 @@ import Foundation
 import CoreLocation
 import Combine
 import OSLog
-import FirebaseFirestore
+import Supabase
 
 @MainActor
 class OrderService: ObservableObject {
-    private let db = Firestore.firestore()
+    private let client = SupabaseManager.client
     private let logger = Logger(subsystem: "com.meirzhan.LogisticsApp", category: "orders")
 
     @Published var orders: [Order] = []
@@ -15,9 +15,10 @@ class OrderService: ObservableObject {
     @Published var isLoading = false
     @Published var errorMessage: String?
 
-    private var clientOrdersListener: ListenerRegistration?
-    private var availableOrdersListener: ListenerRegistration?
-    private var driverOrdersListener: ListenerRegistration?
+    private var realtimeChannel: RealtimeChannelV2?
+    private var realtimeTask: Task<Void, Never>?
+    private var activeClientId: String?
+    private var activeDriverId: String?
 
     // MARK: - Create Order
 
@@ -35,21 +36,17 @@ class OrderService: ObservableObject {
         insurance: Bool,
         urgentDelivery: Bool
     ) async throws -> Order {
+        let orderId = UUID().uuidString.lowercased()
         let trackNumber = generateTrackNumber()
         let now = Date()
         let estimatedDelivery = Calendar.current.date(byAdding: .day, value: tariffType.deliveryDays, to: now) ?? now
         let driverEarning = Int(Double(price) * 0.7)
+        let cleanDescription = packageDescription.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        let initialEvent = OrderStatusEvent(
-            status: OrderStatus.accepted.rawValue,
-            timestamp: now,
-            note: "Тапсырыс жасалды"
-        )
-
-        let order = Order(
-            id: UUID().uuidString,
+        let row = OrderRow(
+            id: orderId,
             trackNumber: trackNumber,
-            clientId: clientId,
+            clientId: clientId.lowercased(),
             clientName: clientName,
             clientPhone: clientPhone,
             driverId: nil,
@@ -58,7 +55,7 @@ class OrderService: ObservableObject {
             fromAddress: fromAddress,
             toAddress: toAddress,
             route: "\(fromAddress) → \(toAddress)",
-            packageDescription: packageDescription.trimmingCharacters(in: .whitespacesAndNewlines),
+            packageDescription: cleanDescription,
             weight: weight,
             packageType: packageType.storageKey,
             tariffType: tariffType.storageKey,
@@ -68,89 +65,115 @@ class OrderService: ObservableObject {
             price: price,
             currency: "₸",
             driverEarning: driverEarning,
+            driverLatitude: nil,
+            driverLongitude: nil,
             createdAt: now,
             estimatedDelivery: estimatedDelivery,
             deliveredAt: nil,
-            cancelledAt: nil,
-            statusHistory: [initialEvent],
-            driverLocation: nil
+            cancelledAt: nil
         )
 
-        let orderData = orderToDict(order)
-        try await db.collection("orders").document(order.id).setData(orderData)
-        return order
+        try await client.from("orders").insert(row).execute()
+
+        let eventRow = OrderStatusEventRow(
+            id: UUID().uuidString.lowercased(),
+            orderId: orderId,
+            status: OrderStatus.accepted.rawValue,
+            note: "Тапсырыс жасалды",
+            createdAt: now
+        )
+        try await client.from("order_status_events").insert(eventRow).execute()
+
+        return row.toOrder(events: [eventRow.toEvent()])
     }
 
     // MARK: - Listen to Client Orders
 
     func listenToClientOrders(clientId: String) {
         stopListening()
+        activeClientId = clientId.lowercased()
+        activeDriverId = nil
         isLoading = true
 
-        clientOrdersListener = db.collection("orders")
-            .whereField("clientId", isEqualTo: clientId)
-            .order(by: "createdAt", descending: true)
-            .addSnapshotListener { [weak self] snapshot, error in
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    self.isLoading = false
+        Task {
+            await fetchClientOrders(clientId: clientId.lowercased())
+            isLoading = false
+        }
 
-                    if let error {
-                        self.logger.error("Client orders listener error: \(error.localizedDescription, privacy: .public)")
-                        self.errorMessage = "Тапсырыстарды жүктеу сәтсіз: \(error.localizedDescription)"
-                        return
-                    }
-
-                    self.orders = snapshot?.documents.compactMap { Order.fromDictionary($0.data()) } ?? []
-                }
-            }
+        subscribeToOrderChanges { [weak self] in
+            guard let self, let id = self.activeClientId else { return }
+            await self.fetchClientOrders(clientId: id)
+        }
     }
 
-    // MARK: - Listen to Driver Workspace (2 secure queries)
+    private func fetchClientOrders(clientId: String) async {
+        do {
+            let rows: [OrderRow] = try await client
+                .from("orders")
+                .select()
+                .eq("client_id", value: clientId)
+                .order("created_at", ascending: false)
+                .execute()
+                .value
+
+            let eventsMap = await fetchEvents(for: rows.map(\.id))
+            self.orders = rows.map { $0.toOrder(events: eventsMap[$0.id] ?? []) }
+        } catch {
+            logger.error("Client orders fetch error: \(error.localizedDescription, privacy: .public)")
+            errorMessage = "Тапсырыстарды жүктеу сәтсіз: \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - Listen to Driver Workspace
 
     func listenToDriverWorkspace(driverId: String) {
         stopListening()
+        activeDriverId = driverId.lowercased()
+        activeClientId = nil
         isLoading = true
 
-        availableOrdersListener = db.collection("orders")
-            .whereField("status", isEqualTo: OrderStatus.accepted.rawValue)
-            .whereField("driverId", isEqualTo: NSNull())
-            .order(by: "createdAt", descending: true)
-            .addSnapshotListener { [weak self] snapshot, error in
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    self.isLoading = false
+        Task {
+            await fetchDriverWorkspace(driverId: driverId.lowercased())
+            isLoading = false
+        }
 
-                    if let error {
-                        self.logger.error("Available orders listener error: \(error.localizedDescription, privacy: .public)")
-                        self.errorMessage = "Қолжетімді тапсырыстарды жүктеу қатесі: \(error.localizedDescription)"
-                        return
-                    }
-
-                    self.availableOrders = snapshot?.documents.compactMap { Order.fromDictionary($0.data()) } ?? []
-                }
-            }
-
-        driverOrdersListener = db.collection("orders")
-            .whereField("driverId", isEqualTo: driverId)
-            .order(by: "createdAt", descending: true)
-            .addSnapshotListener { [weak self] snapshot, error in
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    self.isLoading = false
-
-                    if let error {
-                        self.logger.error("Driver orders listener error: \(error.localizedDescription, privacy: .public)")
-                        self.errorMessage = "Жүргізуші тапсырыстарын жүктеу қатесі: \(error.localizedDescription)"
-                        return
-                    }
-
-                    self.myOrders = snapshot?.documents.compactMap { Order.fromDictionary($0.data()) } ?? []
-                }
-            }
+        subscribeToOrderChanges { [weak self] in
+            guard let self, let id = self.activeDriverId else { return }
+            await self.fetchDriverWorkspace(driverId: id)
+        }
     }
 
-    // MARK: - Assign Order to Driver (Atomic Transaction)
+    private func fetchDriverWorkspace(driverId: String) async {
+        do {
+            let availableRows: [OrderRow] = try await client
+                .from("orders")
+                .select()
+                .eq("status", value: OrderStatus.accepted.rawValue)
+                .is("driver_id", value: nil)
+                .order("created_at", ascending: false)
+                .execute()
+                .value
+
+            let myRows: [OrderRow] = try await client
+                .from("orders")
+                .select()
+                .eq("driver_id", value: driverId)
+                .order("created_at", ascending: false)
+                .execute()
+                .value
+
+            let allIds = (availableRows + myRows).map(\.id)
+            let eventsMap = await fetchEvents(for: allIds)
+
+            self.availableOrders = availableRows.map { $0.toOrder(events: eventsMap[$0.id] ?? []) }
+            self.myOrders = myRows.map { $0.toOrder(events: eventsMap[$0.id] ?? []) }
+        } catch {
+            logger.error("Driver workspace fetch error: \(error.localizedDescription, privacy: .public)")
+            errorMessage = "Тапсырыстарды жүктеу қатесі: \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - Assign Order to Driver (Atomic PostgreSQL RPC)
 
     func assignOrderToDriver(
         orderId: String,
@@ -158,109 +181,107 @@ class OrderService: ObservableObject {
         driverName: String,
         driverPhone: String? = nil
     ) async throws {
-        let orderRef = db.collection("orders").document(orderId)
-        let now = Date()
+        try await client
+            .rpc("accept_order", params: ["p_order_id": orderId])
+            .execute()
 
-        _ = try await db.runTransaction { transaction, errorPointer in
-            let snapshot: DocumentSnapshot
-            do {
-                snapshot = try transaction.getDocument(orderRef)
-            } catch let fetchError as NSError {
-                errorPointer?.pointee = fetchError
-                return nil
-            }
-
-            guard let data = snapshot.data() else {
-                errorPointer?.pointee = NSError(
-                    domain: "OrderService",
-                    code: 404,
-                    userInfo: [NSLocalizedDescriptionKey: "Тапсырыс табылмады"]
-                )
-                return nil
-            }
-
-            let existingDriver = data["driverId"] as? String
-            let currentStatus = data["status"] as? String
-            guard existingDriver == nil, currentStatus == OrderStatus.accepted.rawValue else {
-                errorPointer?.pointee = NSError(
-                    domain: "OrderService",
-                    code: 409,
-                    userInfo: [NSLocalizedDescriptionKey: "Бұл тапсырысты басқа жүргізуші қабылдап қойған"]
-                )
-                return nil
-            }
-
-            var history = data["statusHistory"] as? [[String: Any]] ?? []
-            history.append(
-                OrderStatusEvent(
-                    status: OrderStatus.inTransit.rawValue,
-                    timestamp: now,
-                    note: "Жүргізуші тағайындалды: \(driverName)"
-                ).toDict()
-            )
-
-            var updateData: [String: Any] = [
-                "driverId": driverId,
-                "driverName": driverName,
-                "status": OrderStatus.inTransit.rawValue,
-                "acceptedAt": Timestamp(date: now),
-                "updatedAt": Timestamp(date: now),
-                "statusHistory": history
-            ]
-            if let driverPhone {
-                updateData["driverPhone"] = driverPhone
-            }
-
-            transaction.updateData(updateData, forDocument: orderRef)
-            return nil
-        }
+        await fetchDriverWorkspace(driverId: driverId.lowercased())
     }
 
     // MARK: - Update Order Status
 
     func updateOrderStatus(orderId: String, status: OrderStatus, note: String? = nil) async throws {
-        let now = Date()
-        let event = OrderStatusEvent(status: status.rawValue, timestamp: now, note: note)
+        struct StatusUpdatePayload: Encodable {
+            let status: String
+            let updatedAt: Date
+            let deliveredAt: Date?
 
-        var updateData: [String: Any] = [
-            "status": status.rawValue,
-            "updatedAt": Timestamp(date: now),
-            "statusHistory": FieldValue.arrayUnion([event.toDict()])
-        ]
-
-        if status == .delivered {
-            updateData["deliveredAt"] = Timestamp(date: now)
+            enum CodingKeys: String, CodingKey {
+                case status
+                case updatedAt = "updated_at"
+                case deliveredAt = "delivered_at"
+            }
         }
 
-        try await db.collection("orders").document(orderId).updateData(updateData)
+        let now = Date()
+        let payload = StatusUpdatePayload(
+            status: status.rawValue,
+            updatedAt: now,
+            deliveredAt: status == .delivered ? now : nil
+        )
+
+        try await client
+            .from("orders")
+            .update(payload)
+            .eq("id", value: orderId)
+            .execute()
+
+        let eventRow = OrderStatusEventRow(
+            id: UUID().uuidString.lowercased(),
+            orderId: orderId,
+            status: status.rawValue,
+            note: note,
+            createdAt: now
+        )
+        try await client.from("order_status_events").insert(eventRow).execute()
+
+        await refreshActiveWorkspace()
     }
 
     // MARK: - Cancel Order (Client)
 
     func cancelOrder(orderId: String) async throws {
-        let now = Date()
-        let event = OrderStatusEvent(
-            status: OrderStatus.cancelled.rawValue,
-            timestamp: now,
-            note: "Клиент тапсырысты болдырмады"
-        )
+        struct CancelPayload: Encodable {
+            let status: String
+            let cancelledAt: Date
+            let updatedAt: Date
 
-        try await db.collection("orders").document(orderId).updateData([
-            "status": OrderStatus.cancelled.rawValue,
-            "cancelledAt": Timestamp(date: now),
-            "updatedAt": Timestamp(date: now),
-            "statusHistory": FieldValue.arrayUnion([event.toDict()])
-        ])
+            enum CodingKeys: String, CodingKey {
+                case status
+                case cancelledAt = "cancelled_at"
+                case updatedAt = "updated_at"
+            }
+        }
+
+        let now = Date()
+        try await client
+            .from("orders")
+            .update(CancelPayload(status: OrderStatus.cancelled.rawValue, cancelledAt: now, updatedAt: now))
+            .eq("id", value: orderId)
+            .execute()
+
+        let eventRow = OrderStatusEventRow(
+            id: UUID().uuidString.lowercased(),
+            orderId: orderId,
+            status: OrderStatus.cancelled.rawValue,
+            note: "Клиент тапсырысты болдырмады",
+            createdAt: now
+        )
+        try await client.from("order_status_events").insert(eventRow).execute()
+
+        await refreshActiveWorkspace()
     }
 
     // MARK: - Update Driver Live Location
 
     func updateDriverLocation(orderId: String, coordinate: CLLocationCoordinate2D) async throws {
-        let locationData = GeoPointData(latitude: coordinate.latitude, longitude: coordinate.longitude).toDict()
-        try await db.collection("orders").document(orderId).updateData([
-            "driverLocation": locationData,
-            "updatedAt": Timestamp(date: Date())
-        ])
+        struct LocationPayload: Encodable {
+            let driverLatitude: Double
+            let driverLongitude: Double
+            let updatedAt: Date
+
+            enum CodingKeys: String, CodingKey {
+                case driverLatitude = "driver_latitude"
+                case driverLongitude = "driver_longitude"
+                case updatedAt = "updated_at"
+            }
+        }
+
+        try await client
+            .from("orders")
+            .update(LocationPayload(driverLatitude: coordinate.latitude, driverLongitude: coordinate.longitude, updatedAt: Date()))
+            .eq("id", value: orderId)
+            .execute()
     }
 
     // MARK: - Search Order by Track Number
@@ -281,32 +302,77 @@ class OrderService: ObservableObject {
         comment: String
     ) async throws {
         guard let driverId = order.driverId else { return }
-        let clampedRating = min(max(rating, 1), 5)
         let review = Review(
-            id: UUID().uuidString,
+            id: UUID().uuidString.lowercased(),
             orderId: order.id,
             driverId: driverId,
-            clientId: clientId,
+            clientId: clientId.lowercased(),
             clientName: clientName,
-            rating: clampedRating,
+            rating: min(max(rating, 1), 5),
             comment: comment.trimmingCharacters(in: .whitespacesAndNewlines),
             createdAt: Date()
         )
-        try await db.collection("reviews").document(review.id).setData(review.toDict())
+        try await client.from("reviews").insert(review).execute()
     }
 
     // MARK: - Stop Listening
 
     func stopListening() {
-        clientOrdersListener?.remove()
-        clientOrdersListener = nil
-        availableOrdersListener?.remove()
-        availableOrdersListener = nil
-        driverOrdersListener?.remove()
-        driverOrdersListener = nil
+        realtimeTask?.cancel()
+        realtimeTask = nil
+        if let channel = realtimeChannel {
+            realtimeChannel = nil
+            Task {
+                await client.removeChannel(channel)
+            }
+        }
     }
 
     // MARK: - Helpers
+
+    private func refreshActiveWorkspace() async {
+        if let clientId = activeClientId {
+            await fetchClientOrders(clientId: clientId)
+        } else if let driverId = activeDriverId {
+            await fetchDriverWorkspace(driverId: driverId)
+        }
+    }
+
+    private func subscribeToOrderChanges(onChange: @escaping @MainActor () async -> Void) {
+        let channel = client.channel("orders-\(UUID().uuidString)")
+        let stream = channel.postgresChange(AnyAction.self, schema: "public", table: "orders")
+        self.realtimeChannel = channel
+
+        realtimeTask = Task { [weak self] in
+            await channel.subscribe()
+            for await _ in stream {
+                if Task.isCancelled || self == nil { return }
+                await onChange()
+            }
+        }
+    }
+
+    private func fetchEvents(for orderIds: [String]) async -> [String: [OrderStatusEvent]] {
+        guard !orderIds.isEmpty else { return [:] }
+        do {
+            let rows: [OrderStatusEventRow] = try await client
+                .from("order_status_events")
+                .select()
+                .in("order_id", values: orderIds)
+                .order("created_at", ascending: true)
+                .execute()
+                .value
+
+            var grouped: [String: [OrderStatusEvent]] = [:]
+            for row in rows {
+                grouped[row.orderId, default: []].append(row.toEvent())
+            }
+            return grouped
+        } catch {
+            logger.error("Order events fetch error: \(error.localizedDescription, privacy: .public)")
+            return [:]
+        }
+    }
 
     private func generateTrackNumber() -> String {
         let numbers = "0123456789"
@@ -314,57 +380,7 @@ class OrderService: ObservableObject {
         return "KZ\(String(randomNumbers))"
     }
 
-    private func orderToDict(_ order: Order) -> [String: Any] {
-        var dict: [String: Any] = [
-            "id": order.id,
-            "trackNumber": order.trackNumber,
-            "clientId": order.clientId,
-            "clientName": order.clientName,
-            "driverId": order.driverId ?? NSNull(),
-            "fromAddress": order.fromAddress,
-            "toAddress": order.toAddress,
-            "route": order.route,
-            "packageDescription": order.packageDescription,
-            "weight": order.weight,
-            "packageType": order.packageType,
-            "tariffType": order.tariffType,
-            "status": order.status,
-            "hasInsurance": order.hasInsurance,
-            "isUrgent": order.isUrgent,
-            "price": order.price,
-            "currency": order.currency,
-            "driverEarning": order.driverEarning,
-            "createdAt": Timestamp(date: order.createdAt),
-            "estimatedDelivery": Timestamp(date: order.estimatedDelivery),
-            "updatedAt": Timestamp(date: order.createdAt),
-            "statusHistory": order.statusHistory.map { $0.toDict() }
-        ]
-
-        if let clientPhone = order.clientPhone {
-            dict["clientPhone"] = clientPhone
-        }
-        if let driverName = order.driverName {
-            dict["driverName"] = driverName
-        }
-        if let driverPhone = order.driverPhone {
-            dict["driverPhone"] = driverPhone
-        }
-        if let deliveredAt = order.deliveredAt {
-            dict["deliveredAt"] = Timestamp(date: deliveredAt)
-        }
-        if let cancelledAt = order.cancelledAt {
-            dict["cancelledAt"] = Timestamp(date: cancelledAt)
-        }
-        if let driverLocation = order.driverLocation {
-            dict["driverLocation"] = driverLocation.toDict()
-        }
-
-        return dict
-    }
-
     deinit {
-        clientOrdersListener?.remove()
-        availableOrdersListener?.remove()
-        driverOrdersListener?.remove()
+        realtimeTask?.cancel()
     }
 }

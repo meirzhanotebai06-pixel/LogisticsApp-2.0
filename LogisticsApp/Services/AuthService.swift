@@ -1,57 +1,37 @@
 import Foundation
 import Combine
 import OSLog
-import FirebaseAuth
-import FirebaseFirestore
+import Supabase
 
 @MainActor
 class AuthService: ObservableObject {
-    @Published var currentUser: User?
+    @Published var currentUser: AppUser?
     @Published var isAuthenticated = false
     @Published var isLoading = false
 
-    private let db = Firestore.firestore()
+    private let client = SupabaseManager.client
     private let logger = Logger(subsystem: "com.meirzhan.LogisticsApp", category: "auth")
-    private var authStateHandle: AuthStateDidChangeListenerHandle?
-    private var userProfileListener: ListenerRegistration?
+    private var authTask: Task<Void, Never>?
 
     init() {
-        checkFirstLaunch()
         setupAuthListener()
     }
 
     deinit {
-        if let handle = authStateHandle {
-            Auth.auth().removeStateDidChangeListener(handle)
-        }
-        userProfileListener?.remove()
-    }
-
-    // MARK: - First Launch Check
-
-    private func checkFirstLaunch() {
-        let hasLaunchedBefore = UserDefaults.standard.bool(forKey: "hasLaunchedBefore")
-        if !hasLaunchedBefore {
-            do {
-                try Auth.auth().signOut()
-                UserDefaults.standard.set(true, forKey: "hasLaunchedBefore")
-            } catch {
-                logger.error("First launch signOut error: \(error.localizedDescription, privacy: .public)")
-            }
-        }
+        authTask?.cancel()
     }
 
     // MARK: - Auth Listener
 
     private func setupAuthListener() {
-        authStateHandle = Auth.auth().addStateDidChangeListener { [weak self] _, firebaseUser in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                if let firebaseUser {
-                    self.fetchUserData(userId: firebaseUser.uid)
+        isLoading = true
+        authTask = Task { [weak self] in
+            guard let self else { return }
+            for await (_, session) in client.auth.authStateChanges {
+                if Task.isCancelled { return }
+                if let session {
+                    await self.fetchUserData(userId: session.user.id.uuidString.lowercased())
                 } else {
-                    self.userProfileListener?.remove()
-                    self.userProfileListener = nil
                     self.currentUser = nil
                     self.isAuthenticated = false
                     self.isLoading = false
@@ -62,32 +42,63 @@ class AuthService: ObservableObject {
 
     // MARK: - Fetch User Profile
 
-    private func fetchUserData(userId: String) {
+    func refreshCurrentUser() async {
+        guard let userId = currentUser?.id else { return }
+        await fetchUserData(userId: userId)
+    }
+
+    private func fetchUserData(userId: String) async {
         isLoading = true
+        defer { isLoading = false }
 
-        userProfileListener?.remove()
-        userProfileListener = db.collection("users").document(userId).addSnapshotListener { [weak self] snapshot, error in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.isLoading = false
+        do {
+            let profiles: [ProfileRow] = try await client
+                .from("profiles")
+                .select()
+                .eq("id", value: userId)
+                .limit(1)
+                .execute()
+                .value
 
-                if let error {
-                    self.logger.error("Firestore user fetch error: \(error.localizedDescription, privacy: .public)")
-                    return
-                }
+            guard let profile = profiles.first else {
+                logger.warning("Profile row missing for authenticated user")
+                return
+            }
 
-                guard let data = snapshot?.data() else {
-                    self.logger.warning("Firestore user document missing for uid")
-                    return
-                }
+            var vehicleInfo: VehicleInfo?
+            if profile.userType == UserType.driver.rawValue {
+                let vehicles: [VehicleRow] = try await client
+                    .from("vehicles")
+                    .select()
+                    .eq("driver_id", value: userId)
+                    .limit(1)
+                    .execute()
+                    .value
 
-                if let user = User.fromDictionary(data) {
-                    self.currentUser = user
-                    self.isAuthenticated = true
-                } else {
-                    self.logger.error("Failed to decode User model from Firestore")
+                let docRows: [DriverDocumentRow] = try await client
+                    .from("driver_documents")
+                    .select()
+                    .eq("driver_id", value: userId)
+                    .execute()
+                    .value
+
+                let docs = VehicleDocuments.from(rows: docRows)
+                if let vehicle = vehicles.first {
+                    vehicleInfo = VehicleInfo(
+                        model: vehicle.model,
+                        plateNumber: vehicle.plateNumber,
+                        capacity: vehicle.capacity,
+                        documents: docs
+                    )
                 }
             }
+
+            if let appUser = profile.toAppUser(vehicleInfo: vehicleInfo) {
+                self.currentUser = appUser
+                self.isAuthenticated = true
+            }
+        } catch {
+            logger.error("Supabase user fetch error: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -101,7 +112,7 @@ class AuthService: ObservableObject {
         userType: UserType,
         completion: @escaping (Bool, String?) -> Void
     ) {
-        let normalizedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let normalizedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
 
         if let emailError = AuthValidation.validateEmailDetailed(normalizedEmail) {
@@ -126,43 +137,35 @@ class AuthService: ObservableObject {
 
         isLoading = true
 
-        Auth.auth().createUser(withEmail: normalizedEmail, password: password) { [weak self] authResult, error in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
+        Task {
+            do {
+                let authResponse = try await client.auth.signUp(
+                    email: normalizedEmail,
+                    password: password
+                )
 
-                if let error {
-                    self.isLoading = false
-                    completion(false, self.localizeFirebaseError(error))
-                    return
-                }
-
-                guard let firebaseUser = authResult?.user else {
-                    self.isLoading = false
-                    completion(false, "Аутентификация сәтсіз аяқталды")
-                    return
-                }
-
-                let user = User(
-                    id: firebaseUser.uid,
+                let uid = authResponse.user.id.uuidString.lowercased()
+                let profile = ProfileRow(
+                    id: uid,
                     email: normalizedEmail,
                     name: normalizedName,
-                    userType: userType,
+                    userType: userType.rawValue,
                     phone: normalizedPhone,
-                    vehicleInfo: nil,
-                    isOnDuty: userType == .driver ? false : nil,
+                    isOnDuty: false,
                     rating: nil
                 )
 
-                self.saveUserToFirestore(user: user) { success, saveError in
-                    self.isLoading = false
-                    if success {
-                        completion(true, nil)
-                    } else {
-                        // Prevent orphaned Auth accounts if Firestore profile write fails
-                        firebaseUser.delete { _ in }
-                        completion(false, saveError)
-                    }
-                }
+                try await client
+                    .from("profiles")
+                    .insert(profile)
+                    .execute()
+
+                await fetchUserData(userId: uid)
+                isLoading = false
+                completion(true, nil)
+            } catch {
+                isLoading = false
+                completion(false, localizeSupabaseError(error))
             }
         }
     }
@@ -170,7 +173,7 @@ class AuthService: ObservableObject {
     // MARK: - Login
 
     func login(email: String, password: String, completion: @escaping (Bool, String?) -> Void) {
-        let normalizedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
 
         if let emailError = AuthValidation.validateEmailDetailed(normalizedEmail) {
             completion(false, emailError)
@@ -184,16 +187,18 @@ class AuthService: ObservableObject {
 
         isLoading = true
 
-        Auth.auth().signIn(withEmail: normalizedEmail, password: password) { [weak self] _, error in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.isLoading = false
-
-                if let error {
-                    completion(false, self.localizeFirebaseError(error))
-                } else {
-                    completion(true, nil)
-                }
+        Task {
+            do {
+                let session = try await client.auth.signIn(
+                    email: normalizedEmail,
+                    password: password
+                )
+                await fetchUserData(userId: session.user.id.uuidString.lowercased())
+                isLoading = false
+                completion(true, nil)
+            } catch {
+                isLoading = false
+                completion(false, localizeSupabaseError(error))
             }
         }
     }
@@ -201,11 +206,11 @@ class AuthService: ObservableObject {
     // MARK: - Password Reset & Profile Management
 
     func resetPassword(email: String) async throws {
-        let normalizedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if let emailError = AuthValidation.validateEmailDetailed(normalizedEmail) {
             throw NSError(domain: "AuthValidation", code: 400, userInfo: [NSLocalizedDescriptionKey: emailError])
         }
-        try await Auth.auth().sendPasswordReset(withEmail: normalizedEmail)
+        try await client.auth.resetPasswordForEmail(normalizedEmail)
     }
 
     func updateProfile(name: String, phone: String) async throws {
@@ -226,115 +231,75 @@ class AuthService: ObservableObject {
             )
         }
 
-        try await db.collection("users").document(userId).updateData([
-            "name": trimmedName,
-            "phone": normalizedPhone
-        ])
+        struct ProfileUpdate: Encodable {
+            let name: String
+            let phone: String
+        }
+
+        try await client
+            .from("profiles")
+            .update(ProfileUpdate(name: trimmedName, phone: normalizedPhone))
+            .eq("id", value: userId)
+            .execute()
+
+        await fetchUserData(userId: userId)
     }
 
     func updateDriverDutyStatus(isOnDuty: Bool) async throws {
         guard let userId = currentUser?.id else { return }
-        try await db.collection("users").document(userId).updateData([
-            "isOnDuty": isOnDuty
-        ])
+        struct DutyUpdate: Encodable {
+            let isOnDuty: Bool
+            enum CodingKeys: String, CodingKey {
+                case isOnDuty = "is_on_duty"
+            }
+        }
+
+        try await client
+            .from("profiles")
+            .update(DutyUpdate(isOnDuty: isOnDuty))
+            .eq("id", value: userId)
+            .execute()
+
+        await fetchUserData(userId: userId)
     }
 
     func deleteAccount() async throws {
-        guard let firebaseUser = Auth.auth().currentUser else { return }
-        let uid = firebaseUser.uid
-
-        userProfileListener?.remove()
-        userProfileListener = nil
-
-        try await db.collection("users").document(uid).delete()
-        try await firebaseUser.delete()
-
+        try await client.rpc("delete_my_account").execute()
+        try? await client.auth.signOut()
         currentUser = nil
         isAuthenticated = false
-    }
-
-    // MARK: - Save User To Firestore
-
-    private func saveUserToFirestore(user: User, completion: @escaping (Bool, String?) -> Void) {
-        var userData: [String: Any] = [
-            "id": user.id,
-            "email": user.email,
-            "name": user.name,
-            "userType": user.userType.rawValue,
-            "phone": user.phone ?? "",
-            "createdAt": Timestamp(date: Date()),
-            "vehicleInfo": NSNull()
-        ]
-        if let isOnDuty = user.isOnDuty {
-            userData["isOnDuty"] = isOnDuty
-        }
-
-        db.collection("users").document(user.id).setData(userData) { error in
-            Task { @MainActor in
-                if let error {
-                    completion(false, error.localizedDescription)
-                } else {
-                    completion(true, nil)
-                }
-            }
-        }
     }
 
     // MARK: - Logout
 
     func logout() {
-        do {
-            try Auth.auth().signOut()
-            userProfileListener?.remove()
-            userProfileListener = nil
+        Task {
+            do {
+                try await client.auth.signOut()
+            } catch {
+                logger.error("Logout error: \(error.localizedDescription, privacy: .public)")
+            }
             currentUser = nil
             isAuthenticated = false
-        } catch {
-            logger.error("Logout error: \(error.localizedDescription, privacy: .public)")
         }
     }
 
     // MARK: - Error Localization
 
-    private func localizeFirebaseError(_ error: Error) -> String {
-        let nsError = error as NSError
-
-        if let errorCode = AuthErrorCode(rawValue: nsError.code) {
-            switch errorCode {
-            case .emailAlreadyInUse:
-                return "Бұл email-мен пайдаланушы тіркелген"
-            case .invalidEmail:
-                return "Email дұрыс форматта емес"
-            case .weakPassword:
-                return "Құпия сөз тым әлсіз"
-            case .networkError:
-                return "Желі қатесі. Интернет байланысын тексеріңіз"
-            case .userNotFound:
-                return "Пайдаланушы табылмады"
-            case .wrongPassword, .invalidCredential:
-                return "Email немесе құпия сөз қате"
-            case .tooManyRequests:
-                return "Тым көп сұрау жіберілді. Кейінірек қайталаңыз"
-            case .userDisabled:
-                return "Пайдаланушының есебі өшірілген"
-            case .operationNotAllowed:
-                return "Бұл операция рұқсат етілмеген"
-            default:
-                return "Аутентификация қатесі: \(error.localizedDescription)"
-            }
+    private func localizeSupabaseError(_ error: Error) -> String {
+        let lower = error.localizedDescription.lowercased()
+        if lower.contains("already registered") || lower.contains("already exists") {
+            return "Бұл email-мен пайдаланушы тіркелген"
         }
-
-        if nsError.domain == "FIRFirestoreErrorDomain" {
-            switch nsError.code {
-            case 7:
-                return "Firestore қолжетімсіз. Интернет байланысын тексеріңіз"
-            case 3:
-                return "Деректерді сақтау кезінде қате орын алды"
-            default:
-                return "Firestore қатесі: \(error.localizedDescription)"
-            }
+        if lower.contains("invalid login credentials") {
+            return "Email немесе құпия сөз қате"
         }
-
+        if lower.contains("email not confirmed") {
+            return "Email расталмаған. Поштаңызды тексеріңіз"
+        }
+        if lower.contains("network") || lower.contains("offline") {
+            return "Желі қатесі. Интернет байланысын тексеріңіз"
+        }
         return "Қате орын алды: \(error.localizedDescription)"
     }
 }

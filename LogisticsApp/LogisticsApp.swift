@@ -1,6 +1,4 @@
 import SwiftUI
-import FirebaseCore
-import FirebaseFirestore
 
 enum AppTheme: String, CaseIterable, Identifiable {
     case system
@@ -28,20 +26,8 @@ enum AppTheme: String, CaseIterable, Identifiable {
 
 @main
 struct LogisticsApp: App {
-    @StateObject private var authService: AuthService
+    @StateObject private var authService = AuthService()
     @AppStorage("appTheme") private var appThemeRaw = AppTheme.system.rawValue
-
-    init() {
-        if FirebaseApp.app() == nil {
-            FirebaseApp.configure()
-        }
-        let db = Firestore.firestore()
-        let settings = db.settings
-        settings.cacheSettings = PersistentCacheSettings()
-        db.settings = settings
-
-        _authService = StateObject(wrappedValue: AuthService())
-    }
 
     private var selectedTheme: AppTheme {
         AppTheme(rawValue: appThemeRaw) ?? .system

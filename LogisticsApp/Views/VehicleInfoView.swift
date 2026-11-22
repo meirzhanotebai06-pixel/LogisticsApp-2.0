@@ -130,6 +130,7 @@ struct VehicleInfoView: View {
                     plateNumber: plateNumber,
                     capacity: capacity
                 )
+                await authService.refreshCurrentUser()
                 showAddVehicleSheet = false
             } catch {
                 errorMessage = "Сақтау қатесі: \(error.localizedDescription)"
@@ -146,6 +147,7 @@ struct VehicleInfoView: View {
             documentType: type,
             documentInfo: documentInfo
         )
+        await authService.refreshCurrentUser()
     }
 }
 

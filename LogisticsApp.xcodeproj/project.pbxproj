@@ -7,16 +7,11 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		2B0B7D8D2EBBCDC700CE77FC /* FirebaseAnalytics in Frameworks */ = {isa = PBXBuildFile; productRef = 2B0B7D8C2EBBCDC700CE77FC /* FirebaseAnalytics */; };
-		2B0B7D8F2EBBCDC700CE77FC /* FirebaseAuth in Frameworks */ = {isa = PBXBuildFile; productRef = 2B0B7D8E2EBBCDC700CE77FC /* FirebaseAuth */; };
-		2B0B7D912EBBCDC700CE77FC /* FirebaseFirestore in Frameworks */ = {isa = PBXBuildFile; productRef = 2B0B7D902EBBCDC700CE77FC /* FirebaseFirestore */; };
-		2B0B7D932EBBCDC700CE77FC /* FirebaseStorage in Frameworks */ = {isa = PBXBuildFile; productRef = 2B0B7D922EBBCDC700CE77FC /* FirebaseStorage */; };
-		2B8E46992EBBBBEF003862DA /* GoogleService-Info.plist in Resources */ = {isa = PBXBuildFile; fileRef = 2B8E46982EBBBBEF003862DA /* GoogleService-Info.plist */; };
+		2B0B7D8D2EBBCDC700CE77FC /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = 2B0B7D8C2EBBCDC700CE77FC /* Supabase */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		2B5D4DC42E9A366300047710 /* LogisticsApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LogisticsApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		2B8E46982EBBBBEF003862DA /* GoogleService-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "GoogleService-Info.plist"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -32,10 +27,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				2B0B7D8D2EBBCDC700CE77FC /* FirebaseAnalytics in Frameworks */,
-				2B0B7D932EBBCDC700CE77FC /* FirebaseStorage in Frameworks */,
-				2B0B7D8F2EBBCDC700CE77FC /* FirebaseAuth in Frameworks */,
-				2B0B7D912EBBCDC700CE77FC /* FirebaseFirestore in Frameworks */,
+				2B0B7D8D2EBBCDC700CE77FC /* Supabase in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -45,7 +37,6 @@
 		2B5D4DBB2E9A366300047710 = {
 			isa = PBXGroup;
 			children = (
-				2B8E46982EBBBBEF003862DA /* GoogleService-Info.plist */,
 				2B5D4DC62E9A366300047710 /* LogisticsApp */,
 				2B5D4DC52E9A366300047710 /* Products */,
 			);
@@ -79,10 +70,7 @@
 			);
 			name = LogisticsApp;
 			packageProductDependencies = (
-				2B0B7D8C2EBBCDC700CE77FC /* FirebaseAnalytics */,
-				2B0B7D8E2EBBCDC700CE77FC /* FirebaseAuth */,
-				2B0B7D902EBBCDC700CE77FC /* FirebaseFirestore */,
-				2B0B7D922EBBCDC700CE77FC /* FirebaseStorage */,
+				2B0B7D8C2EBBCDC700CE77FC /* Supabase */,
 			);
 			productName = LogisticsApp;
 			productReference = 2B5D4DC42E9A366300047710 /* LogisticsApp.app */;
@@ -113,7 +101,7 @@
 			mainGroup = 2B5D4DBB2E9A366300047710;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				2B0B7D8B2EBBCDC700CE77FC /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */,
+				2B0B7D8B2EBBCDC700CE77FC /* XCRemoteSwiftPackageReference "supabase-swift" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 2B5D4DC52E9A366300047710 /* Products */;
@@ -130,7 +118,6 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				2B8E46992EBBBBEF003862DA /* GoogleService-Info.plist in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -360,36 +347,21 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		2B0B7D8B2EBBCDC700CE77FC /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */ = {
+		2B0B7D8B2EBBCDC700CE77FC /* XCRemoteSwiftPackageReference "supabase-swift" */ = {
 			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/firebase/firebase-ios-sdk.git";
+			repositoryURL = "https://github.com/supabase/supabase-swift.git";
 			requirement = {
 				kind = upToNextMajorVersion;
-				minimumVersion = 12.5.0;
+				minimumVersion = 2.25.0;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		2B0B7D8C2EBBCDC700CE77FC /* FirebaseAnalytics */ = {
+		2B0B7D8C2EBBCDC700CE77FC /* Supabase */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 2B0B7D8B2EBBCDC700CE77FC /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
-			productName = FirebaseAnalytics;
-		};
-		2B0B7D8E2EBBCDC700CE77FC /* FirebaseAuth */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 2B0B7D8B2EBBCDC700CE77FC /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
-			productName = FirebaseAuth;
-		};
-		2B0B7D902EBBCDC700CE77FC /* FirebaseFirestore */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 2B0B7D8B2EBBCDC700CE77FC /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
-			productName = FirebaseFirestore;
-		};
-		2B0B7D922EBBCDC700CE77FC /* FirebaseStorage */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 2B0B7D8B2EBBCDC700CE77FC /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
-			productName = FirebaseStorage;
+			package = 2B0B7D8B2EBBCDC700CE77FC /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Supabase;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

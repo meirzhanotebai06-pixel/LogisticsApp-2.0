@@ -25,7 +25,7 @@ struct AdminDashboardView: View {
         }
     }
 
-    private var filteredDrivers: [User] {
+    private var filteredDrivers: [AppUser] {
         adminService.drivers.filter { driver in
             let docs = driver.vehicleInfo?.documents?.allDocuments ?? []
             let matchesFilter: Bool
@@ -256,7 +256,7 @@ private struct AdminMetricView: View {
 }
 
 private struct AdminDriverRow: View {
-    let driver: User
+    let driver: AppUser
 
     private var pendingCount: Int {
         driver.vehicleInfo?.documents?.allDocuments.filter {
@@ -307,7 +307,7 @@ private struct AdminDriverDetailView: View {
     @State private var rejectionType: DocumentType?
     @State private var previewImageURL: URL?
 
-    private var driver: User? {
+    private var driver: AppUser? {
         adminService.drivers.first { $0.id == driverId }
     }
 

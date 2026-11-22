@@ -1,7 +1,6 @@
 import Foundation
 import SwiftUI
 import CoreLocation
-import FirebaseFirestore
 
 // MARK: - Order Status
 
@@ -80,28 +79,6 @@ struct OrderStatusEvent: Identifiable, Codable {
     var orderStatus: OrderStatus {
         OrderStatus(rawValue: status) ?? .accepted
     }
-
-    func toDict() -> [String: Any] {
-        var dict: [String: Any] = [
-            "id": id,
-            "status": status,
-            "timestamp": Timestamp(date: timestamp)
-        ]
-        if let note {
-            dict["note"] = note
-        }
-        return dict
-    }
-
-    static func fromDictionary(_ dict: [String: Any]) -> OrderStatusEvent? {
-        guard let status = dict["status"] as? String,
-              let timestamp = dict["timestamp"] as? Timestamp else {
-            return nil
-        }
-        let id = dict["id"] as? String ?? UUID().uuidString
-        let note = dict["note"] as? String
-        return OrderStatusEvent(id: id, status: status, timestamp: timestamp.dateValue(), note: note)
-    }
 }
 
 struct GeoPointData: Codable, Equatable {
@@ -110,21 +87,6 @@ struct GeoPointData: Codable, Equatable {
 
     var coordinate: CLLocationCoordinate2D {
         CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
-    }
-
-    func toDict() -> [String: Any] {
-        [
-            "latitude": latitude,
-            "longitude": longitude
-        ]
-    }
-
-    static func fromDictionary(_ dict: [String: Any]) -> GeoPointData? {
-        guard let lat = (dict["latitude"] as? NSNumber)?.doubleValue,
-              let lon = (dict["longitude"] as? NSNumber)?.doubleValue else {
-            return nil
-        }
-        return GeoPointData(latitude: lat, longitude: lon)
     }
 }
 
@@ -180,55 +142,80 @@ struct Order: Identifiable, Codable {
         let toLoc = CLLocation(latitude: to.latitude, longitude: to.longitude)
         return Int(fromLoc.distance(from: toLoc) / 1000)
     }
+}
 
-    static func fromDictionary(_ dict: [String: Any]) -> Order? {
-        guard let id = dict["id"] as? String,
-              let trackNumber = dict["trackNumber"] as? String,
-              let clientId = dict["clientId"] as? String,
-              let clientName = dict["clientName"] as? String,
-              let fromAddress = dict["fromAddress"] as? String,
-              let toAddress = dict["toAddress"] as? String,
-              let route = dict["route"] as? String,
-              let packageDescription = dict["packageDescription"] as? String,
-              let weight = (dict["weight"] as? NSNumber)?.doubleValue,
-              let packageType = dict["packageType"] as? String,
-              let tariffType = dict["tariffType"] as? String,
-              let status = dict["status"] as? String,
-              let hasInsurance = dict["hasInsurance"] as? Bool,
-              let isUrgent = dict["isUrgent"] as? Bool,
-              let createdAtTimestamp = dict["createdAt"] as? Timestamp,
-              let estimatedDeliveryTimestamp = dict["estimatedDelivery"] as? Timestamp else {
-            return nil
+// MARK: - PostgreSQL Row DTOs
+
+struct OrderRow: Codable {
+    let id: String
+    let trackNumber: String
+    let clientId: String
+    let clientName: String
+    let clientPhone: String?
+    let driverId: String?
+    let driverName: String?
+    let driverPhone: String?
+    let fromAddress: String
+    let toAddress: String
+    let route: String
+    let packageDescription: String
+    let weight: Double
+    let packageType: String
+    let tariffType: String
+    let status: String
+    let hasInsurance: Bool
+    let isUrgent: Bool
+    let price: Int
+    let currency: String
+    let driverEarning: Int
+    let driverLatitude: Double?
+    let driverLongitude: Double?
+    let createdAt: Date
+    let estimatedDelivery: Date
+    let deliveredAt: Date?
+    let cancelledAt: Date?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case trackNumber = "track_number"
+        case clientId = "client_id"
+        case clientName = "client_name"
+        case clientPhone = "client_phone"
+        case driverId = "driver_id"
+        case driverName = "driver_name"
+        case driverPhone = "driver_phone"
+        case fromAddress = "from_address"
+        case toAddress = "to_address"
+        case route
+        case packageDescription = "package_description"
+        case weight
+        case packageType = "package_type"
+        case tariffType = "tariff_type"
+        case status
+        case hasInsurance = "has_insurance"
+        case isUrgent = "is_urgent"
+        case price
+        case currency
+        case driverEarning = "driver_earning"
+        case driverLatitude = "driver_latitude"
+        case driverLongitude = "driver_longitude"
+        case createdAt = "created_at"
+        case estimatedDelivery = "estimated_delivery"
+        case deliveredAt = "delivered_at"
+        case cancelledAt = "cancelled_at"
+    }
+
+    func toOrder(events: [OrderStatusEvent] = []) -> Order {
+        let location: GeoPointData?
+        if let lat = driverLatitude, let lon = driverLongitude {
+            location = GeoPointData(latitude: lat, longitude: lon)
+        } else {
+            location = nil
         }
 
-        let clientPhone = dict["clientPhone"] as? String
-        let driverId = dict["driverId"] as? String
-        let driverName = dict["driverName"] as? String
-        let driverPhone = dict["driverPhone"] as? String
-        let deliveredAtTimestamp = dict["deliveredAt"] as? Timestamp
-        let cancelledAtTimestamp = dict["cancelledAt"] as? Timestamp
-
-        let fallbackTariff = TariffType(storageKeyOrRawValue: tariffType) ?? .standard
-        let fallbackPrice = Tariff.calculatePrice(
-            tariff: fallbackTariff,
-            weight: weight,
-            distanceKm: 0,
-            insurance: hasInsurance,
-            urgentDelivery: isUrgent
-        )
-        let price = (dict["price"] as? NSNumber)?.intValue ?? fallbackPrice
-        let currency = dict["currency"] as? String ?? "₸"
-        let driverEarning = (dict["driverEarning"] as? NSNumber)?.intValue ?? Int(Double(price) * 0.7)
-
-        let historyArray = dict["statusHistory"] as? [[String: Any]] ?? []
-        let parsedHistory = historyArray.compactMap { OrderStatusEvent.fromDictionary($0) }
-        let history = parsedHistory.isEmpty
-            ? [OrderStatusEvent(status: status, timestamp: createdAtTimestamp.dateValue())]
-            : parsedHistory.sorted { $0.timestamp < $1.timestamp }
-
-        let driverLocation = (dict["driverLocation"] as? [String: Any]).flatMap {
-            GeoPointData.fromDictionary($0)
-        }
+        let history = events.isEmpty
+            ? [OrderStatusEvent(status: status, timestamp: createdAt)]
+            : events.sorted { $0.timestamp < $1.timestamp }
 
         return Order(
             id: id,
@@ -252,13 +239,33 @@ struct Order: Identifiable, Codable {
             price: price,
             currency: currency,
             driverEarning: driverEarning,
-            createdAt: createdAtTimestamp.dateValue(),
-            estimatedDelivery: estimatedDeliveryTimestamp.dateValue(),
-            deliveredAt: deliveredAtTimestamp?.dateValue(),
-            cancelledAt: cancelledAtTimestamp?.dateValue(),
+            createdAt: createdAt,
+            estimatedDelivery: estimatedDelivery,
+            deliveredAt: deliveredAt,
+            cancelledAt: cancelledAt,
             statusHistory: history,
-            driverLocation: driverLocation
+            driverLocation: location
         )
+    }
+}
+
+struct OrderStatusEventRow: Codable {
+    let id: String
+    let orderId: String
+    let status: String
+    let note: String?
+    let createdAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case orderId = "order_id"
+        case status
+        case note
+        case createdAt = "created_at"
+    }
+
+    func toEvent() -> OrderStatusEvent {
+        OrderStatusEvent(id: id, status: status, timestamp: createdAt, note: note)
     }
 }
 
@@ -274,16 +281,14 @@ struct Review: Identifiable, Codable {
     let comment: String
     let createdAt: Date
 
-    func toDict() -> [String: Any] {
-        [
-            "id": id,
-            "orderId": orderId,
-            "driverId": driverId,
-            "clientId": clientId,
-            "clientName": clientName,
-            "rating": rating,
-            "comment": comment,
-            "createdAt": Timestamp(date: createdAt)
-        ]
+    enum CodingKeys: String, CodingKey {
+        case id
+        case orderId = "order_id"
+        case driverId = "driver_id"
+        case clientId = "client_id"
+        case clientName = "client_name"
+        case rating
+        case comment
+        case createdAt = "created_at"
     }
 }
